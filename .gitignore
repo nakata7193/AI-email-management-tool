@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Email-specific
+*.db
+*.db-journal
+email_cache.db*
+token.json
+credentials.json
+
+# OAuth tokens
+*.token
+
+# Email data
+emails/
+cache/
