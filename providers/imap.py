@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class IMAPProvider(EmailProvider):
     """IMAP email provider implementation."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         self.connection: Optional[imaplib.IMAP4_SSL] = None
-        self.config = imap_config
+        self.config = config if config else imap_config
 
     def connect(self) -> None:
         """Establish connection to IMAP server."""

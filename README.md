@@ -5,10 +5,11 @@ An intelligent email management tool powered by Claude AI that helps you organiz
 ## Features
 
 - **Multi-Provider Support**: Connect to both Gmail (OAuth2) and IMAP email providers
+- **Multiple Account Profiles**: Manage and switch between multiple email accounts (work, personal, etc.)
 - **AI-Powered Categorization**: Automatically categorize emails into urgent, important, newsletters, receipts, social, and can_wait
 - **Smart Summarization**: Generate concise summaries with key points and action items
 - **Natural Language Search**: Search your emails using plain English queries
-- **Local SQLite Cache**: Fast local caching with full-text search
+- **Local SQLite Cache**: Fast local caching with full-text search (separate cache per profile)
 - **Beautiful CLI**: Rich terminal interface with colors and formatting
 
 ## Prerequisites
@@ -68,17 +69,86 @@ An intelligent email management tool powered by Claude AI that helps you organiz
 
 ## Usage
 
+### Profile Management (Multiple Accounts)
+
+**Create profiles for different email accounts**:
+
+```bash
+# Create work Gmail profile
+python main.py profile create work --description "Work Gmail" --provider gmail
+
+# Create personal Gmail profile
+python main.py profile create personal --description "Personal Gmail" --provider gmail
+
+# Create IMAP work email profile
+python main.py profile create workmail --description "Office 365 Email" --provider imap
+```
+
+**List all profiles**:
+```bash
+python main.py profile list
+```
+
+**Set active profile** (all commands use this by default):
+```bash
+python main.py profile use work
+```
+
+**Use specific profile with any command**:
+```bash
+python main.py --profile personal inbox
+python main.py --profile work fetch --limit 50
+```
+
+**Delete a profile**:
+```bash
+python main.py profile delete old-account
+```
+
+### Profile Configuration in .env
+
+After creating a profile, add its credentials to `.env` with the profile name as prefix:
+
+```bash
+# Work profile (Gmail)
+WORK_GMAIL_CREDENTIALS_FILE=credentials_work.json
+WORK_GMAIL_TOKEN_FILE=token_work.json
+
+# Personal profile (Gmail)
+PERSONAL_GMAIL_CREDENTIALS_FILE=credentials_personal.json
+PERSONAL_GMAIL_TOKEN_FILE=token_personal.json
+
+# Workmail profile (IMAP)
+WORKMAIL_IMAP_SERVER=outlook.office365.com
+WORKMAIL_IMAP_PORT=993
+WORKMAIL_IMAP_EMAIL=you@company.com
+WORKMAIL_IMAP_PASSWORD=your_app_password
+```
+
+Each profile gets its own:
+- Authentication tokens
+- Email cache database (`email_cache_work.db`, `email_cache_personal.db`)
+- Separate inbox and statistics
+
 ### Authentication Setup
 
 **Gmail OAuth2**:
 ```bash
+# Default profile
 python main.py setup --provider gmail
+
+# Specific profile
+python main.py --profile work setup --provider gmail
 ```
 This opens a browser for OAuth2 authentication.
 
 **IMAP**:
 ```bash
+# Default profile
 python main.py setup --provider imap
+
+# Specific profile
+python main.py --profile workmail setup --provider imap
 ```
 Ensure IMAP credentials are in `.env` file.
 

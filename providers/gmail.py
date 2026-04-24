@@ -24,9 +24,9 @@ SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
 class GmailProvider(EmailProvider):
     """Gmail API provider implementation."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         self.service = None
-        self.config = gmail_config
+        self.config = config if config else gmail_config
 
     def _get_credentials(self) -> Credentials:
         """Get or refresh Gmail API credentials."""
