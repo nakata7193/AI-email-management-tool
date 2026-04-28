@@ -2,17 +2,24 @@
 
 import logging
 from typing import List, Dict, Any, Optional
-from anthropic import Anthropic
-
-from config import claude_config
+from ai.client import AIClient
 
 logger = logging.getLogger(__name__)
 
 class EmailSearcher:
-    """Natural language email search powered by Claude."""
+    """Natural language email search powered by AI.
 
-    def __init__(self):
-        self.client = Anthropic(api_key=claude_config.api_key)
+    Separates business logic (query parsing, SQL building) from I/O (API calls).
+    AI client is injected, making this class easy to test and provider-agnostic.
+    """
+
+    def __init__(self, ai_client: AIClient):
+        """Initialize searcher with AI client.
+
+        Args:
+            ai_client: AI client implementation (injected dependency)
+        """
+        self._client = ai_client
 
     def parse_search_query(self, natural_query: str) -> Dict[str, Any]:
         """
@@ -25,7 +32,34 @@ class EmailSearcher:
             Dictionary with search parameters (keywords, filters, date ranges)
         """
         try:
-            prompt = f"""Convert this natural language search query into structured search parameters for an email database.
+            prompt = self._build_query_parse_prompt(natural_query)
+            result_text = self._client.complete(prompt, max_tokens=500)
+            return self._parse_query_response(result_text, natural_query)
+
+        except Exception as e:
+            logger.error(f"Query parsing failed: {e}")
+            # Fallback to simple keyword search
+            return {
+                'keywords': [natural_query],
+                'sender': None,
+                'date_range': None,
+                'category': None,
+                'status': None,
+                'content_type': None
+            }
+
+    def _build_query_parse_prompt(self, natural_query: str) -> str:
+        """Build prompt for parsing natural language query.
+
+        Pure function - testable without API calls.
+
+        Args:
+            natural_query: User's search query
+
+        Returns:
+            Formatted prompt string
+        """
+        return f"""Convert this natural language search query into structured search parameters for an email database.
 
 **User Query:** "{natural_query}"
 
@@ -49,38 +83,18 @@ Content Type: [type or "any"]
 
 Analyze the query and provide the structured parameters now."""
 
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=500,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-            result_text = response.content[-1].text if response.content else ""
-
-            return self._parse_query_response(result_text, natural_query)
-
-        except Exception as e:
-            logger.error(f"Query parsing failed: {e}")
-            # Fallback to simple keyword search
-            return {
-                'keywords': [natural_query],
-                'sender': None,
-                'date_range': None,
-                'category': None,
-                'status': None,
-                'content_type': None
-            }
-
     def _parse_query_response(self, response_text: str, original_query: str) -> Dict[str, Any]:
-        """Parse Claude's query analysis response."""
+        """Parse AI query analysis response.
+
+        Pure function - testable without API calls.
+
+        Args:
+            response_text: Raw AI response
+            original_query: Original user query (fallback)
+
+        Returns:
+            Structured search parameters
+        """
         params = {
             'keywords': [],
             'sender': None,
@@ -198,7 +212,7 @@ Analyze the query and provide the structured parameters now."""
 
     def rank_results(self, results: List[Dict[str, Any]], original_query: str) -> List[Dict[str, Any]]:
         """
-        Use Claude to rank search results by relevance.
+        Use AI to rank search results by relevance.
 
         Args:
             results: List of email search results
@@ -236,21 +250,7 @@ Ranking: [comma-separated list of result numbers]
 
 Provide the ranking now."""
 
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=300,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-            result_text = response.content[-1].text if response.content else ""
+            result_text = self._client.complete(prompt, max_tokens=300)
 
             # Parse ranking
             ranking = self._parse_ranking_response(result_text)
@@ -276,7 +276,16 @@ Provide the ranking now."""
             return results
 
     def _parse_ranking_response(self, response_text: str) -> List[int]:
-        """Parse ranking response from Claude."""
+        """Parse ranking response from AI.
+
+        Pure function - testable without API calls.
+
+        Args:
+            response_text: Raw AI response
+
+        Returns:
+            List of result indices in ranked order
+        """
         ranking = []
 
         for line in response_text.strip().split('\n'):

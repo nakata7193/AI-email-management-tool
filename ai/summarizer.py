@@ -2,20 +2,27 @@
 
 import logging
 from typing import Dict, Optional
-from anthropic import Anthropic
-
+from ai.client import AIClient
 from providers.base import Email
-from config import claude_config
 from parsers.email_parser import EmailParser
 
 logger = logging.getLogger(__name__)
 
 class EmailSummarizer:
-    """AI-powered email summarization using Claude."""
+    """AI-powered email summarization.
 
-    def __init__(self):
-        self.client = Anthropic(api_key=claude_config.api_key)
-        self.parser = EmailParser()
+    Separates business logic (prompt building, parsing) from I/O (API calls).
+    AI client is injected, making this class easy to test and provider-agnostic.
+    """
+
+    def __init__(self, ai_client: AIClient):
+        """Initialize summarizer with AI client.
+
+        Args:
+            ai_client: AI client implementation (injected dependency)
+        """
+        self._client = ai_client
+        self._parser = EmailParser()
 
     def summarize(self, email: Email, include_action_items: bool = True) -> Dict[str, str]:
         """
@@ -30,37 +37,13 @@ class EmailSummarizer:
         """
         try:
             # Prepare email content
-            body = email.body
-
-            if not body and email.html_body:
-                body = self.parser.html_to_text(email.html_body)
-
-            # Extract main content
-            main_content, _ = self.parser.extract_quoted_reply(body)
-
-            # Truncate for AI
-            truncated_body = self.parser.truncate_for_ai(main_content, max_chars=8000)
+            body = self._prepare_body(email)
 
             # Build prompt
-            prompt = self._build_summarization_prompt(email, truncated_body, include_action_items)
+            prompt = self._build_summarization_prompt(email, body, include_action_items)
 
-            # Call Claude API with streaming for long emails
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=1000,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-            # Get final response
-            result_text = response.content[-1].text if response.content else ""
+            # Call AI (injected dependency handles I/O)
+            result_text = self._client.complete(prompt, max_tokens=1000)
 
             return self._parse_summary_response(result_text)
 
@@ -71,8 +54,41 @@ class EmailSummarizer:
                 'action_items': ''
             }
 
+    def _prepare_body(self, email: Email) -> str:
+        """Prepare email body for AI processing.
+
+        Pure function - testable without API calls.
+
+        Args:
+            email: Email object
+
+        Returns:
+            Cleaned and truncated email body
+        """
+        body = email.body
+
+        if not body and email.html_body:
+            body = self._parser.html_to_text(email.html_body)
+
+        # Extract main content
+        main_content, _ = self._parser.extract_quoted_reply(body)
+
+        # Truncate for AI
+        return self._parser.truncate_for_ai(main_content, max_chars=8000)
+
     def _build_summarization_prompt(self, email: Email, body: str, include_action_items: bool) -> str:
-        """Build the summarization prompt for Claude."""
+        """Build the summarization prompt.
+
+        Pure function - testable without API calls.
+
+        Args:
+            email: Email object
+            body: Prepared email body
+            include_action_items: Whether to include action items section
+
+        Returns:
+            Formatted prompt string
+        """
         action_items_instruction = ""
         if include_action_items:
             action_items_instruction = """
@@ -109,7 +125,16 @@ Action Items: [bulleted list or "None"]
 Respond now with your summary."""
 
     def _parse_summary_response(self, response_text: str) -> Dict[str, str]:
-        """Parse Claude's summary response."""
+        """Parse AI summary response.
+
+        Pure function - testable without API calls.
+
+        Args:
+            response_text: Raw AI response
+
+        Returns:
+            Dictionary with 'summary' and 'action_items' keys
+        """
         summary = ''
         action_items = ''
 
@@ -148,9 +173,9 @@ Respond now with your summary."""
             # Build thread context
             thread_content = []
             for i, email in enumerate(emails):
-                body = email.body or self.parser.html_to_text(email.html_body or '')
-                main_content, _ = self.parser.extract_quoted_reply(body)
-                preview = self.parser.get_text_preview(main_content, length=500)
+                body = email.body or self._parser.html_to_text(email.html_body or '')
+                main_content, _ = self._parser.extract_quoted_reply(body)
+                preview = self._parser.get_text_preview(main_content, length=500)
 
                 thread_content.append(
                     f"**Email {i+1}** (from {email.sender}, {email.received_date.strftime('%Y-%m-%d')}):\n{preview}"
@@ -171,21 +196,8 @@ Respond now with your summary."""
 
 Respond with the thread summary now."""
 
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=800,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-            return response.content[-1].text if response.content else "Failed to summarize thread"
+            result = self._client.complete(prompt, max_tokens=800)
+            return result if result else "Failed to summarize thread"
 
         except Exception as e:
             logger.error(f"Thread summarization failed: {e}")
@@ -202,8 +214,8 @@ Respond with the thread summary now."""
             Suggested response text
         """
         try:
-            body = email.body or self.parser.html_to_text(email.html_body or '')
-            main_content, _ = self.parser.extract_quoted_reply(body)
+            body = email.body or self._parser.html_to_text(email.html_body or '')
+            main_content, _ = self._parser.extract_quoted_reply(body)
 
             prompt = f"""Draft a professional response to this email.
 
@@ -221,21 +233,8 @@ Respond with the thread summary now."""
 
 Provide the suggested response now."""
 
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=600,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
-
-            return response.content[-1].text if response.content else "Could not generate response"
+            result = self._client.complete(prompt, max_tokens=600)
+            return result if result else "Could not generate response"
 
         except Exception as e:
             logger.error(f"Response generation failed: {e}")

@@ -8,16 +8,22 @@ from datetime import datetime
 import logging
 
 from providers.base import EmailProvider, Email
-from config import imap_config
 
 logger = logging.getLogger(__name__)
 
 class IMAPProvider(EmailProvider):
     """IMAP email provider implementation."""
 
-    def __init__(self, config=None):
+    def __init__(self, config):
+        """Initialize IMAP provider with explicit configuration.
+
+        Args:
+            config: IMAPConfig instance (required, no defaults)
+        """
+        if not config:
+            raise ValueError("IMAPConfig is required")
         self.connection: Optional[imaplib.IMAP4_SSL] = None
-        self.config = config if config else imap_config
+        self.config = config
 
     def connect(self) -> None:
         """Establish connection to IMAP server."""
@@ -206,3 +212,210 @@ class IMAPProvider(EmailProvider):
         except Exception as e:
             logger.error(f"Error retrieving email: {e}")
             return None
+
+    def mark_as_unread(self, email_id: str) -> bool:
+        """Mark an email as unread."""
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            self.connection.select("INBOX")
+            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+
+            if status != "OK" or not messages[0]:
+                logger.warning(f"Email {email_id} not found")
+                return False
+
+            msg_id = messages[0].split()[0]
+            self.connection.store(msg_id, '-FLAGS', '\\Seen')
+            logger.info(f"Marked email {email_id} as unread")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error marking email as unread: {e}")
+            return False
+
+    def delete_email(self, email_id: str, expunge: bool = False) -> bool:
+        """
+        Delete an email by marking it with \\Deleted flag.
+
+        Args:
+            email_id: Email Message-ID to delete
+            expunge: If True, permanently remove the email immediately.
+                    If False, just mark for deletion (can be undeleted later).
+
+        Returns:
+            True if successful, False otherwise
+
+        Note:
+            - With expunge=False: Email marked for deletion but still in mailbox
+            - With expunge=True: Email permanently removed immediately
+            - Some servers auto-expunge on logout
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            self.connection.select("INBOX")
+            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+
+            if status != "OK" or not messages[0]:
+                logger.warning(f"Email {email_id} not found")
+                return False
+
+            msg_id = messages[0].split()[0]
+
+            # Mark for deletion
+            self.connection.store(msg_id, '+FLAGS', '\\Deleted')
+            logger.info(f"Marked email {email_id} for deletion")
+
+            # Permanently remove if requested
+            if expunge:
+                self.connection.expunge()
+                logger.info(f"Permanently deleted email {email_id}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error deleting email: {e}")
+            return False
+
+    def move_email(self, email_id: str, destination_folder: str) -> bool:
+        """
+        Move an email to a different folder.
+
+        Args:
+            email_id: Email Message-ID to move
+            destination_folder: Destination folder name (e.g., 'Archive', 'Spam')
+
+        Returns:
+            True if successful, False otherwise
+
+        Note:
+            IMAP "move" is implemented as COPY + DELETE:
+            1. Copy email to destination folder
+            2. Mark original as deleted
+            3. Expunge to remove original
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            self.connection.select("INBOX")
+            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+
+            if status != "OK" or not messages[0]:
+                logger.warning(f"Email {email_id} not found")
+                return False
+
+            msg_id = messages[0].split()[0]
+
+            # Copy to destination folder
+            result = self.connection.copy(msg_id, destination_folder)
+            if result[0] != 'OK':
+                logger.error(f"Failed to copy email to {destination_folder}")
+                return False
+
+            # Delete from source (INBOX)
+            self.connection.store(msg_id, '+FLAGS', '\\Deleted')
+            self.connection.expunge()
+
+            logger.info(f"Moved email {email_id} to {destination_folder}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error moving email: {e}")
+            return False
+
+    def flag_email(self, email_id: str, flagged: bool = True) -> bool:
+        """
+        Flag/star an email (mark as important).
+
+        Args:
+            email_id: Email Message-ID to flag
+            flagged: True to flag, False to unflag
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            self.connection.select("INBOX")
+            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+
+            if status != "OK" or not messages[0]:
+                logger.warning(f"Email {email_id} not found")
+                return False
+
+            msg_id = messages[0].split()[0]
+
+            if flagged:
+                self.connection.store(msg_id, '+FLAGS', '\\Flagged')
+                logger.info(f"Flagged email {email_id}")
+            else:
+                self.connection.store(msg_id, '-FLAGS', '\\Flagged')
+                logger.info(f"Unflagged email {email_id}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error flagging email: {e}")
+            return False
+
+    def list_folders(self) -> List[str]:
+        """
+        List all available folders/mailboxes.
+
+        Returns:
+            List of folder names (e.g., ['INBOX', 'Sent', 'Drafts', 'Archive'])
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            status, folders = self.connection.list()
+
+            if status != "OK":
+                return []
+
+            folder_names = []
+            for folder in folders:
+                # Parse folder name from IMAP response
+                # Format: (\\HasNoChildren) "." "INBOX.Sent"
+                parts = folder.decode().split('"')
+                if len(parts) >= 3:
+                    folder_name = parts[-2]
+                    folder_names.append(folder_name)
+
+            logger.info(f"Found {len(folder_names)} folders")
+            return folder_names
+
+        except Exception as e:
+            logger.error(f"Error listing folders: {e}")
+            return []
+
+    def expunge_deleted(self) -> bool:
+        """
+        Permanently remove all emails marked for deletion.
+
+        Returns:
+            True if successful, False otherwise
+
+        Note:
+            This affects ALL emails marked with \\Deleted flag in current folder.
+            Use carefully!
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to IMAP server")
+
+        try:
+            self.connection.select("INBOX")
+            self.connection.expunge()
+            logger.info("Expunged deleted emails from INBOX")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error expunging deleted emails: {e}")
+            return False

@@ -8,15 +8,21 @@ from pathlib import Path
 import logging
 
 from providers.base import Email
-from config import database_config, app_config
 
 logger = logging.getLogger(__name__)
 
 class EmailCache:
     """SQLite-based email caching system."""
 
-    def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or database_config.path
+    def __init__(self, db_path: Path):
+        """Initialize cache with explicit database path.
+
+        Args:
+            db_path: Path to SQLite database file (required)
+        """
+        if not db_path:
+            raise ValueError("Database path is required")
+        self.db_path = db_path
         self.connection: Optional[sqlite3.Connection] = None
         self._initialize_database()
 
@@ -25,7 +31,7 @@ class EmailCache:
         try:
             self.connection = sqlite3.connect(
                 str(self.db_path),
-                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+                detect_types=0  # Disable automatic datetime parsing
             )
             self.connection.row_factory = sqlite3.Row
 
@@ -116,6 +122,40 @@ class EmailCache:
 
             if row:
                 return self._row_to_email(row)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve email {email_id}: {e}")
+            return None
+
+    def get_email_by_id(self, email_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve an email as dictionary by ID (supports partial ID match).
+
+        Args:
+            email_id: Email ID (full or partial)
+
+        Returns:
+            Email dictionary if found, None otherwise
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            # Try exact match first
+            cursor.execute("SELECT * FROM emails WHERE id = ?", (email_id,))
+            row = cursor.fetchone()
+
+            # If not found, try partial match
+            if not row:
+                cursor.execute(
+                    "SELECT * FROM emails WHERE id LIKE ? LIMIT 1",
+                    (f"%{email_id}",)
+                )
+                row = cursor.fetchone()
+
+            if row:
+                return dict(row)
 
             return None
 
@@ -245,18 +285,16 @@ class EmailCache:
             logger.error(f"Failed to update summary: {e}")
             return False
 
-    def clean_old_emails(self, days: Optional[int] = None) -> int:
+    def clean_old_emails(self, days: int = 30) -> int:
         """
         Remove emails older than specified days.
 
         Args:
-            days: Number of days to keep (default from config)
+            days: Number of days to keep (default: 30)
 
         Returns:
             Number of emails deleted
         """
-        days = days or app_config.cache_max_age_days
-
         try:
             cursor = self.connection.cursor()
             cutoff_date = datetime.now() - timedelta(days=days)
@@ -275,6 +313,141 @@ class EmailCache:
         except Exception as e:
             logger.error(f"Failed to clean old emails: {e}")
             return 0
+
+    def get_frequent_senders(self, min_count: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get senders who have sent more than min_count emails.
+
+        Args:
+            min_count: Minimum number of emails to be considered frequent
+
+        Returns:
+            List of senders with their email counts
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            cursor.execute("""
+                SELECT sender, COUNT(*) as count
+                FROM emails
+                GROUP BY sender
+                HAVING count >= ?
+                ORDER BY count DESC
+            """, (min_count,))
+
+            results = cursor.fetchall()
+            return [{'sender': row[0], 'count': row[1]} for row in results]
+
+        except Exception as e:
+            logger.error(f"Failed to get frequent senders: {e}")
+            return []
+
+    def get_count(self, provider: Optional[str] = None) -> int:
+        """
+        Get total email count.
+
+        Args:
+            provider: Optional provider filter
+
+        Returns:
+            Number of emails in cache
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            if provider:
+                cursor.execute("SELECT COUNT(*) FROM emails WHERE provider = ?", (provider,))
+            else:
+                cursor.execute("SELECT COUNT(*) FROM emails")
+
+            return cursor.fetchone()[0]
+
+        except Exception as e:
+            logger.error(f"Failed to get count: {e}")
+            return 0
+
+    def get_uncategorized_emails(self, limit: int) -> List[Email]:
+        """
+        Get emails without categories as Email objects.
+
+        Args:
+            limit: Maximum number of emails to return
+
+        Returns:
+            List of Email objects without categories
+        """
+        try:
+            emails_dict = self.get_emails(limit=limit)
+            uncategorized = [e for e in emails_dict if not e.get('category')]
+
+            # Convert to Email objects
+            email_objects = []
+            for email_data in uncategorized:
+                try:
+                    email_obj = self._dict_to_email(email_data)
+                    email_objects.append(email_obj)
+                except Exception as e:
+                    logger.warning(f"Failed to convert email {email_data.get('id')}: {e}")
+                    continue
+
+            return email_objects
+
+        except Exception as e:
+            logger.error(f"Failed to get uncategorized emails: {e}")
+            return []
+
+    def execute_search_query(self, sql_query: str, params: list) -> List[Dict[str, Any]]:
+        """
+        Execute a search query and return results.
+
+        Args:
+            sql_query: SQL query string
+            params: Query parameters
+
+        Returns:
+            List of email dictionaries
+        """
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(sql_query, params)
+            results = [dict(row) for row in cursor.fetchall()]
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed to execute search query: {e}")
+            return []
+
+    def _dict_to_email(self, data: dict) -> Email:
+        """Convert dictionary to Email object using centralized logic."""
+        return Email.from_dict(data)
+
+    def get_emails_by_sender(self, sender: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get all emails from a specific sender.
+
+        Args:
+            sender: Email sender to filter by
+            limit: Maximum number of emails to return
+
+        Returns:
+            List of email dictionaries
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            cursor.execute("""
+                SELECT * FROM emails
+                WHERE sender LIKE ?
+                ORDER BY received_date DESC
+                LIMIT ?
+            """, (f"%{sender}%", limit))
+
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+        except Exception as e:
+            logger.error(f"Failed to get emails by sender: {e}")
+            return []
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get cache statistics."""

@@ -1,0 +1,52 @@
+BATCH SIZE COMPARISON TEST RESULTS
+===================================
+Date: 2026-04-28
+Test: 1000 emails with different batch sizes
+
+FINAL COMPARISON - 1000 EMAILS
+================================================================================
+
+Batch    Calls    Time(s)    Input        Output     Total        Cost($)
+--------------------------------------------------------------------------------
+10       100      191.76     215,925      5,366      221,291      0.7283
+50       20       81.55      206,725      5,076      211,801      0.6963
+100      10       62.75      205,575      5,010      210,585      0.6919
+200      5        53.39      205,000      4,758      209,758      0.6864
+400      3        48.37      204,770      4,480      209,250      0.6815
+1000     1        45.68      204,542      4,473      209,015      0.6807
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. Larger batches are both faster AND cheaper
+   - 10 emails/batch: 191s, $0.73
+   - 1000 emails/batch: 46s, $0.68
+
+2. Token overhead decreases with larger batches
+   - The prompt template (~200 tokens) is sent once per batch
+   - With batch=10: 100 batches × ~200 = ~20k tokens wasted on repeated prompts
+   - With batch=1000: 1 batch × ~200 = ~200 tokens
+
+3. Output tokens stay consistent (~4.5 tokens per email regardless of batch size)
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+Fastest:  batch_size=1000 (45.68s, 1 API calls)
+Cheapest: batch_size=1000 ($0.6807)
+
+Practical recommendation: batch_size=100-200
+- 100: Good balance (63s, 10 API calls) - easier error recovery
+- 200: Faster (53s, 5 API calls) - good for stable connections
+- 1000: Fastest but risky - if one fails, you lose the whole batch
+
+================================================================================
+MODEL INFO
+================================================================================
+
+Model: Claude Sonnet 4.6
+Context window: 1,000,000 tokens
+Max output: 64,000 tokens
+Pricing: $3/M input, $15/M output

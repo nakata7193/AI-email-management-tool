@@ -230,3 +230,6 @@ credentials.json
 # Email data
 emails/
 cache/
+
+# Data directory (contains sensitive credentials and databases)
+data/

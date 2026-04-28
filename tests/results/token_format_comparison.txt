@@ -1,0 +1,121 @@
+TOKEN FORMAT COMPARISON TEST RESULTS
+=====================================
+Date: 2026-04-28
+Test: Compact format vs JSON format for 10 emails
+
+================================================================================
+PROMPT FORMAT COMPARISON
+================================================================================
+
+COMPACT FORMAT:
+---------------
+Categorize these 10 emails.
+
+1. Subject: ...
+   From: ...
+   Body: ...
+
+Categories (use ONLY these, use "other" if unsure): receipt, shipping, ...
+
+Response: one line per email
+<number>. <category>
+
+Example:
+1. shipping
+2. promotional
+3. other
+
+
+JSON FORMAT:
+------------
+Analyze these 10 emails and categorize each based on CONTENT, not just sender.
+
+EMAIL 1:
+- ID: ...
+- Subject: ...
+- From: ...
+- Body Preview: ...
+
+**Available Content Categories:**
+- receipt: receipt
+- shipping: shipping
+...
+
+**Response Format (JSON array, one object per email):**
+[
+  {"email_id": "id1", "content_category": "category", "importance": "high/medium/low", ...},
+  ...
+]
+
+================================================================================
+RESPONSE FORMAT COMPARISON
+================================================================================
+
+COMPACT OUTPUT:
+---------------
+1. ads/promotional
+2. ads/promotional
+3. job_alert
+4. personal
+5. newsletter
+6. ads/promotional
+7. ads/promotional
+8. ads/promotional
+9. account_update
+10. newsletter
+
+
+JSON OUTPUT:
+------------
+```json
+[
+  {"email_id": "...", "content_category": "...", "importance": "...", "contains_receipt": false, "key_info": "..."},
+  ...
+]
+```
+
+================================================================================
+TOKEN COMPARISON (10 emails)
+================================================================================
+
+Metric               COMPACT         JSON            Savings
+----------------------------------------------------------------
+Input tokens         2,155           2,918           763
+Output tokens        57              1,038           981
+Total tokens         2,212           3,956           1,744
+
+Total savings: 44.1%
+Output token savings: 94.5%
+
+================================================================================
+EVOLUTION OF COMPACT FORMAT
+================================================================================
+
+Version 1 (with importance + flags):
+  1. shipping H RT
+  2. promotional L
+  3. personal M A
+
+Version 2 (flags only):
+  1. shipping RT
+  2. promotional
+  3. personal A
+
+Version 3 (category only - FINAL):
+  1. shipping
+  2. promotional
+  3. personal
+
+Rationale:
+- Importance is determined by category config, not AI
+- Flags (receipt/tracking/action) were not needed for organization
+- Simpler = fewer tokens = lower cost
+
+================================================================================
+MODEL INFO
+================================================================================
+
+Model: Claude Sonnet 4.6
+Context window: 1,000,000 tokens
+Max output: 64,000 tokens
+Pricing: $3/M input, $15/M output

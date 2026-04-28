@@ -19,6 +19,39 @@ class Email:
     is_read: bool
     labels: List[str]
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Email':
+        """Convert dictionary to Email object.
+
+        Centralized conversion logic to avoid duplication across the codebase.
+        Handles date string parsing with graceful fallback.
+
+        Args:
+            data: Email dictionary from database or API
+
+        Returns:
+            Email object
+        """
+        received_date = data['received_date']
+        if isinstance(received_date, str):
+            try:
+                received_date = datetime.fromisoformat(received_date)
+            except (ValueError, TypeError):
+                received_date = datetime.now()
+
+        return cls(
+            id=data['id'],
+            subject=data['subject'],
+            sender=data['sender'],
+            recipient=data['recipient'],
+            body=data['body'],
+            html_body=data.get('html_body'),
+            received_date=received_date,
+            has_attachments=data['has_attachments'],
+            is_read=data['is_read'],
+            labels=data.get('labels', [])
+        )
+
 class EmailProvider(ABC):
     """Abstract interface for email providers."""
 

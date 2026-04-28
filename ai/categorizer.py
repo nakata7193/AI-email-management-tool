@@ -2,16 +2,18 @@
 
 import logging
 from typing import Dict, Optional
-from anthropic import Anthropic
-
+from ai.client import AIClient
 from providers.base import Email
-from config import claude_config
 from parsers.email_parser import EmailParser
 
 logger = logging.getLogger(__name__)
 
 class EmailCategorizer:
-    """AI-powered email categorization using Claude."""
+    """AI-powered email categorization.
+
+    Separates business logic (prompt building, parsing) from I/O (API calls).
+    AI client is injected, making this class easy to test and provider-agnostic.
+    """
 
     CATEGORIES = {
         'urgent': 'Requires immediate action or response',
@@ -22,13 +24,18 @@ class EmailCategorizer:
         'can_wait': 'Low priority, can be addressed later'
     }
 
-    def __init__(self):
-        self.client = Anthropic(api_key=claude_config.api_key)
-        self.parser = EmailParser()
+    def __init__(self, ai_client: AIClient):
+        """Initialize categorizer with AI client.
+
+        Args:
+            ai_client: AI client implementation (injected dependency)
+        """
+        self._client = ai_client
+        self._parser = EmailParser()
 
     def categorize(self, email: Email) -> Dict[str, str]:
         """
-        Categorize an email using Claude API.
+        Categorize an email using AI.
 
         Args:
             email: Email object to categorize
@@ -37,40 +44,16 @@ class EmailCategorizer:
             Dictionary with 'category' and 'reasoning' keys
         """
         try:
-            # Prepare email content for Claude
-            body = email.body
-
-            # Convert HTML to text if needed
-            if not body and email.html_body:
-                body = self.parser.html_to_text(email.html_body)
-
-            # Extract main content (remove quoted replies)
-            main_content, _ = self.parser.extract_quoted_reply(body)
-
-            # Truncate for AI processing
-            truncated_body = self.parser.truncate_for_ai(main_content, max_chars=5000)
+            # Prepare email content
+            body = self._prepare_body(email)
 
             # Build categorization prompt
-            prompt = self._build_categorization_prompt(email, truncated_body)
+            prompt = self._build_categorization_prompt(email, body)
 
-            # Call Claude API with adaptive thinking
-            response = self.client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=500,
-                thinking={
-                    "type": "adaptive"
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
+            # Call AI (injected dependency handles I/O)
+            result_text = self._client.complete(prompt, max_tokens=500)
 
             # Parse response
-            result_text = response.content[-1].text if response.content else ""
-
             return self._parse_categorization_response(result_text)
 
         except Exception as e:
@@ -80,8 +63,40 @@ class EmailCategorizer:
                 'reasoning': f'Error during categorization: {str(e)}'
             }
 
+    def _prepare_body(self, email: Email) -> str:
+        """Prepare email body for AI processing.
+
+        Pure function - testable without API calls.
+
+        Args:
+            email: Email object
+
+        Returns:
+            Cleaned and truncated email body
+        """
+        # Convert HTML to text if needed
+        body = email.body
+        if not body and email.html_body:
+            body = self._parser.html_to_text(email.html_body)
+
+        # Extract main content (remove quoted replies)
+        main_content, _ = self._parser.extract_quoted_reply(body)
+
+        # Truncate for AI processing
+        return self._parser.truncate_for_ai(main_content, max_chars=5000)
+
     def _build_categorization_prompt(self, email: Email, body: str) -> str:
-        """Build the categorization prompt for Claude."""
+        """Build the categorization prompt.
+
+        Pure function - testable without API calls.
+
+        Args:
+            email: Email object
+            body: Prepared email body
+
+        Returns:
+            Formatted prompt string
+        """
         categories_desc = '\n'.join([
             f"- **{cat}**: {desc}"
             for cat, desc in self.CATEGORIES.items()
@@ -111,7 +126,16 @@ Reasoning: [your reasoning in 1-2 sentences]
 Respond now with your categorization."""
 
     def _parse_categorization_response(self, response_text: str) -> Dict[str, str]:
-        """Parse Claude's categorization response."""
+        """Parse AI categorization response.
+
+        Pure function - testable without API calls.
+
+        Args:
+            response_text: Raw AI response
+
+        Returns:
+            Dictionary with 'category' and 'reasoning' keys
+        """
         category = 'can_wait'  # Default
         reasoning = ''
 

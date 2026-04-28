@@ -2,6 +2,7 @@
 
 import os
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,9 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Profile configuration file
 PROFILES_FILE = Path.home() / ".claude" / "email-tool-profiles.json"
@@ -21,10 +25,24 @@ class GmailConfig:
 
     @classmethod
     def from_env(cls, profile: Optional[str] = None) -> "GmailConfig":
-        prefix = f"{profile.upper()}_" if profile else ""
+        """Load Gmail configuration for a profile.
+
+        If profile is provided, looks for files in data/{profile}/ directory.
+        Otherwise uses root-level environment variables.
+        """
+        if profile:
+            # User-specific directory structure: data/{profile}/credentials.json
+            prefix = f"{profile.upper()}_"
+            default_creds = f"data/{profile}/credentials.json"
+            default_token = f"data/{profile}/token.json"
+        else:
+            prefix = ""
+            default_creds = "credentials.json"
+            default_token = "token.json"
+
         return cls(
-            credentials_file=os.getenv(f"{prefix}GMAIL_CREDENTIALS_FILE", "credentials.json"),
-            token_file=os.getenv(f"{prefix}GMAIL_TOKEN_FILE", f"token_{profile}.json" if profile else "token.json")
+            credentials_file=os.getenv(f"{prefix}GMAIL_CREDENTIALS_FILE", default_creds),
+            token_file=os.getenv(f"{prefix}GMAIL_TOKEN_FILE", default_token)
         )
 
 @dataclass
@@ -64,8 +82,14 @@ class DatabaseConfig:
 
     @classmethod
     def from_env(cls, profile: Optional[str] = None) -> "DatabaseConfig":
+        """Load database configuration for a profile.
+
+        If profile is provided, uses data/{profile}/email_cache.db.
+        Otherwise uses CACHE_DB_PATH from env or email_cache.db.
+        """
         if profile:
-            db_path = os.getenv("CACHE_DB_PATH", f"email_cache_{profile}.db")
+            # User-specific directory structure: data/{profile}/email_cache.db
+            db_path = os.getenv("CACHE_DB_PATH", f"data/{profile}/email_cache.db")
         else:
             db_path = os.getenv("CACHE_DB_PATH", "email_cache.db")
         return cls(path=Path(db_path))
@@ -109,13 +133,18 @@ class ProfileManager:
             json.dump(self.data, f, indent=2)
 
     def create_profile(self, name: str, description: str, provider: str):
-        """Create a new profile."""
+        """Create a new profile and its data directory."""
         self.data["profiles"][name] = {
             "description": description,
             "provider": provider,
             "created_at": str(Path(__file__).stat().st_mtime)
         }
         self._save_profiles()
+
+        # Automatically create the profile's data directory
+        profile_data_dir = Path("data") / name
+        profile_data_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Created data directory: {profile_data_dir}")
 
     def list_profiles(self) -> dict:
         """List all profiles."""
@@ -154,9 +183,3 @@ def get_config(profile: Optional[str] = None):
         'app': AppConfig.from_env()
     }
 
-# Global configuration instances (default profile)
-gmail_config = GmailConfig.from_env()
-imap_config = IMAPConfig.from_env()
-claude_config = ClaudeConfig.from_env()
-database_config = DatabaseConfig.from_env()
-app_config = AppConfig.from_env()

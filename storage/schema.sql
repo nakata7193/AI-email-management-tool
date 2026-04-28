@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS emails (
     summary TEXT,
     action_items TEXT,
 
+    -- Content analysis fields (AI-generated)
+    content_type TEXT,           -- receipt, shipping, promotional, newsletter, etc.
+    importance TEXT,             -- high, medium, low
+    contains_receipt BOOLEAN DEFAULT 0,
+    contains_tracking BOOLEAN DEFAULT 0,
+    requires_action BOOLEAN DEFAULT 0,
+    is_promotional BOOLEAN DEFAULT 0,
+    ai_analyzed BOOLEAN DEFAULT 0,
+    ai_analyzed_date TIMESTAMP,
+
     -- Metadata
     labels TEXT,  -- JSON array stored as text
 

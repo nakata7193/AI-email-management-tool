@@ -1,221 +1,303 @@
-"""Gmail API provider implementation."""
+"""Gmail API provider implementation using composition.
 
-import os
-import pickle
-from typing import List, Optional
-from datetime import datetime
-from base64 import urlsafe_b64decode
+This module composes specialized components (authenticator, parser, fetcher, modifier)
+instead of implementing everything in one class. This follows the Single Responsibility
+Principle and makes the code more testable and maintainable.
+"""
+
 import logging
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from typing import List, Optional
 
 from providers.base import EmailProvider, Email
-from config import gmail_config
+from providers.gmail_components.authenticator import GmailAuthenticator
+from providers.gmail_components.parser import GmailMessageParser
+from providers.gmail_components.fetcher import GmailFetcher
+from providers.gmail_components.modifier import GmailModifier
 
 logger = logging.getLogger(__name__)
 
-# Gmail API scopes
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/gmail.modify']
 
 class GmailProvider(EmailProvider):
-    """Gmail API provider implementation."""
+    """Gmail provider - composes specialized components.
 
-    def __init__(self, config=None):
-        self.service = None
-        self.config = config if config else gmail_config
+    This class orchestrates the specialized components but delegates
+    all actual work to them. This follows Composition Over Inheritance
+    and Single Responsibility principles.
+    """
 
-    def _get_credentials(self) -> Credentials:
-        """Get or refresh Gmail API credentials."""
-        creds = None
+    def __init__(self, config):
+        """Initialize Gmail provider with configuration.
 
-        # Load token from file if exists
-        if os.path.exists(self.config.token_file):
-            with open(self.config.token_file, 'rb') as token:
-                creds = pickle.load(token)
+        Args:
+            config: GmailConfig instance with credentials/token file paths
+        """
+        if not config:
+            raise ValueError("GmailConfig is required")
 
-        # If no valid credentials, let user log in
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not os.path.exists(self.config.credentials_file):
-                    raise FileNotFoundError(
-                        f"Gmail credentials file not found: {self.config.credentials_file}\n"
-                        "Please download credentials.json from Google Cloud Console"
-                    )
+        self._config = config
+        self._connected = False
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.config.credentials_file, SCOPES)
-                creds = flow.run_local_server(port=0)
-
-            # Save credentials for next run
-            with open(self.config.token_file, 'wb') as token:
-                pickle.dump(creds, token)
-
-        return creds
+        # Compose specialized components
+        self._authenticator = GmailAuthenticator(
+            config.credentials_file,
+            config.token_file
+        )
+        self._parser = GmailMessageParser()
+        self._fetcher = GmailFetcher(self._parser)
+        self._modifier = GmailModifier(self._parser)
 
     def connect(self) -> None:
         """Establish connection to Gmail API."""
         try:
-            creds = self._get_credentials()
-            self.service = build('gmail', 'v1', credentials=creds)
+            # Authenticate
+            creds = self._authenticator.get_credentials()
+
+            # Initialize components with credentials
+            self._fetcher.set_credentials(creds)
+            self._modifier.set_credentials(creds)
+
+            self._connected = True
             logger.info("Connected to Gmail API")
+
         except Exception as e:
             logger.error(f"Failed to connect to Gmail API: {e}")
             raise ConnectionError(f"Gmail API connection failed: {e}")
 
     def disconnect(self) -> None:
         """Close connection to Gmail API."""
-        self.service = None
+        self._connected = False
         logger.info("Disconnected from Gmail API")
 
-    def _parse_gmail_message(self, msg: dict) -> Email:
-        """Parse Gmail API message into Email object."""
-        headers = {h['name']: h['value'] for h in msg['payload'].get('headers', [])}
+    def fetch_emails(
+        self,
+        limit: int = 100,
+        unread_only: bool = False,
+        max_workers: int = 10
+    ) -> List[Email]:
+        """Fetch emails from Gmail.
 
-        # Extract basic fields
-        subject = headers.get('Subject', '')
-        sender = headers.get('From', '')
-        recipient = headers.get('To', '')
+        Args:
+            limit: Maximum number of emails to fetch
+            unread_only: Only fetch unread emails
+            max_workers: Number of parallel workers
 
-        # Parse date
-        date_str = headers.get('Date', '')
-        try:
-            from email.utils import parsedate_to_datetime
-            received_date = parsedate_to_datetime(date_str)
-        except (TypeError, ValueError):
-            received_date = datetime.now()
-
-        # Extract body
-        body = ""
-        html_body = None
-
-        def extract_body(payload):
-            nonlocal body, html_body
-
-            if 'parts' in payload:
-                for part in payload['parts']:
-                    extract_body(part)
-            else:
-                mime_type = payload.get('mimeType', '')
-                if 'data' in payload.get('body', {}):
-                    data = payload['body']['data']
-                    decoded = urlsafe_b64decode(data).decode('utf-8', errors='ignore')
-
-                    if mime_type == 'text/plain' and not body:
-                        body = decoded
-                    elif mime_type == 'text/html' and not html_body:
-                        html_body = decoded
-
-        extract_body(msg['payload'])
-
-        # Check for attachments
-        has_attachments = any(
-            part.get('filename') for part in msg['payload'].get('parts', [])
-        )
-
-        # Check read status
-        is_read = 'UNREAD' not in msg.get('labelIds', [])
-
-        # Extract labels
-        labels = msg.get('labelIds', [])
-
-        return Email(
-            id=msg['id'],
-            subject=subject,
-            sender=sender,
-            recipient=recipient,
-            body=body,
-            html_body=html_body,
-            received_date=received_date,
-            has_attachments=has_attachments,
-            is_read=is_read,
-            labels=labels
-        )
-
-    def fetch_emails(self, limit: int = 100, unread_only: bool = False) -> List[Email]:
-        """Fetch emails from Gmail."""
-        if not self.service:
+        Returns:
+            List of Email objects
+        """
+        if not self._connected:
             raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        try:
-            # Build query
-            query = 'is:unread' if unread_only else ''
+        return self._fetcher.fetch_emails(limit, unread_only, max_workers)
 
-            # List messages
-            results = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=limit
-            ).execute()
+    def get_all_message_ids(
+        self,
+        limit: Optional[int] = None,
+        unread_only: bool = False
+    ) -> List[str]:
+        """Get all message IDs from inbox.
 
-            messages = results.get('messages', [])
+        Args:
+            limit: Maximum number of IDs (None = all)
+            unread_only: Only get unread message IDs
 
-            if not messages:
-                logger.info("No messages found")
-                return []
+        Returns:
+            List of message IDs
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-            # Fetch full message details
-            emails = []
-            for message in messages:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId='me',
-                        id=message['id'],
-                        format='full'
-                    ).execute()
+        return self._fetcher.get_all_message_ids(limit, unread_only)
 
-                    email_obj = self._parse_gmail_message(msg)
-                    emails.append(email_obj)
+    def fetch_emails_by_ids(
+        self,
+        message_ids: List[str],
+        max_workers: int = 10
+    ) -> List[Email]:
+        """Fetch full email content for given message IDs.
 
-                except Exception as e:
-                    logger.warning(f"Failed to fetch message {message['id']}: {e}")
-                    continue
+        Args:
+            message_ids: List of Gmail message IDs
+            max_workers: Number of parallel workers
 
-            logger.info(f"Fetched {len(emails)} emails from Gmail")
-            return emails
+        Returns:
+            List of Email objects
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        except Exception as e:
-            logger.error(f"Error fetching emails: {e}")
-            return []
+        return self._fetcher.fetch_emails_by_ids(message_ids, max_workers)
+
+    def search_gmail(self, query: str, limit: int = 100) -> List[Email]:
+        """Search Gmail using Gmail's search syntax.
+
+        Args:
+            query: Gmail search query
+            limit: Maximum results
+
+        Returns:
+            List of Email objects
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._fetcher.search_gmail(query, limit)
+
+    def analyze_top_senders(self, limit: Optional[int] = None) -> dict:
+        """Analyze Gmail to find top senders by email count.
+
+        Args:
+            limit: Number of recent emails to analyze (None = ALL)
+
+        Returns:
+            Dictionary mapping sender to email count
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._fetcher.analyze_top_senders(limit)
 
     def mark_as_read(self, email_id: str) -> bool:
-        """Mark a Gmail message as read."""
-        if not self.service:
-            raise ConnectionError("Not connected to Gmail API")
+        """Mark a Gmail message as read.
 
-        try:
-            self.service.users().messages().modify(
-                userId='me',
-                id=email_id,
-                body={'removeLabelIds': ['UNREAD']}
-            ).execute()
+        Args:
+            email_id: Gmail message ID
 
-            logger.info(f"Marked email {email_id} as read")
-            return True
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        except Exception as e:
-            logger.error(f"Error marking email as read: {e}")
-            return False
+        return self._modifier.mark_as_read(email_id)
+
+    def mark_as_unread(self, email_id: str) -> bool:
+        """Mark a Gmail message as unread.
+
+        Args:
+            email_id: Gmail message ID
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.mark_as_unread(email_id)
+
+    def delete_email(self, email_id: str, permanent: bool = False) -> bool:
+        """Delete a Gmail message.
+
+        Args:
+            email_id: Gmail message ID
+            permanent: If True, permanently delete. If False, move to trash.
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.delete_email(email_id, permanent)
+
+    def untrash_email(self, email_id: str) -> bool:
+        """Restore an email from trash.
+
+        Args:
+            email_id: Gmail message ID
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.untrash_email(email_id)
+
+    def move_email(
+        self,
+        email_id: str,
+        add_labels: Optional[List[str]] = None,
+        remove_labels: Optional[List[str]] = None
+    ) -> bool:
+        """Move an email by modifying labels.
+
+        Args:
+            email_id: Gmail message ID
+            add_labels: Labels to add
+            remove_labels: Labels to remove
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.move_email(email_id, add_labels, remove_labels)
+
+    def archive_email(self, email_id: str) -> bool:
+        """Archive an email (remove from INBOX).
+
+        Args:
+            email_id: Gmail message ID
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.archive_email(email_id)
+
+    def star_email(self, email_id: str, starred: bool = True) -> bool:
+        """Star/unstar an email.
+
+        Args:
+            email_id: Gmail message ID
+            starred: True to star, False to unstar
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.star_email(email_id, starred)
+
+    def mark_as_spam(self, email_id: str) -> bool:
+        """Mark an email as spam.
+
+        Args:
+            email_id: Gmail message ID
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.mark_as_spam(email_id)
+
+    def list_labels(self) -> List[dict]:
+        """List all Gmail labels.
+
+        Returns:
+            List of label dictionaries
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.list_labels()
 
     def get_email_by_id(self, email_id: str) -> Optional[Email]:
-        """Retrieve a specific Gmail message by ID."""
-        if not self.service:
-            raise ConnectionError("Not connected to Gmail API")
+        """Retrieve a specific Gmail message by ID.
 
-        try:
-            msg = self.service.users().messages().get(
-                userId='me',
-                id=email_id,
-                format='full'
-            ).execute()
+        Args:
+            email_id: Gmail message ID
 
-            return self._parse_gmail_message(msg)
+        Returns:
+            Email object or None
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        except Exception as e:
-            logger.error(f"Error retrieving email: {e}")
-            return None
+        return self._modifier.get_email_by_id(email_id)
