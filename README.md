@@ -72,8 +72,8 @@ python main.py --profile myemail setup --provider gmail
 # Fetch your emails
 python main.py --profile myemail fetch --limit 100
 
-# Search or categorize
-python main.py --profile myemail categorize
+# Search or classify
+python main.py --profile myemail classify
 python main.py --profile myemail search "emails about invoices"
 ```
 
@@ -122,15 +122,15 @@ python main.py fetch --limit 5000 --batch-size 100
 ### AI Features
 
 ```bash
-# Categorize only uncategorized emails (default)
+# Classify only uncategorized emails (default)
 # Sends up to 100 emails per API call for efficiency
-python main.py categorize
+python main.py classify
 
 # Recategorize all emails
-python main.py categorize --recategorize all
+python main.py classify --recategorize all
 
 # Recategorize emails in a specific category
-python main.py categorize --recategorize newsletter
+python main.py classify --recategorize newsletter
 
 # Apply categories as Gmail labels and move emails out of inbox
 python main.py organize
@@ -162,7 +162,7 @@ python main.py delete --category promotional --limit 100
 
 ### Managing Categories
 
-Categories define how the AI classifies your emails and what Gmail label folders are created.
+Category definitions control how the AI classifies your emails and what Gmail label folders are created.
 `personal` and `other` are always present and cannot be removed.
 
 Category keys use underscores (e.g. `concert_tickets`) and are automatically formatted as
@@ -170,17 +170,17 @@ Gmail folder names (e.g. `Concert Tickets`).
 
 ```bash
 # Interactive setup — view and edit all categories
-python main.py categories
+python main.py category
 
 # Add a new category
-python main.py categories --add receipt "Purchase confirmations and invoices"
-python main.py categories --add "concert tickets" "Live music and event tickets"
+python main.py category --add receipt "Purchase confirmations and invoices"
+python main.py category --add "concert tickets" "Live music and event tickets"
 
 # Edit an existing category's description
-python main.py categories --edit promotional "Marketing emails and sales offers"
+python main.py category --edit promotional "Marketing emails and sales offers"
 
 # Delete a category
-python main.py categories --delete work
+python main.py category --delete work
 ```
 
 **Category → Gmail folder mapping:**
@@ -249,7 +249,7 @@ python main.py --profile work clean --days 90
 AI-email-management-tool/
 ├── main.py                    # CLI entry point
 ├── config.py                  # Configuration management
-├── email_config.json          # User-defined categories (created by `categories` command)
+├── email_config.json          # User-defined categories (created by `category` command)
 ├── requirements.txt           # Python dependencies
 ├── .env                       # Environment variables (excluded from git)
 │
@@ -367,7 +367,7 @@ python main.py profile create work --description "Work Gmail" --provider gmail
 cp ~/work-credentials.json data/work/credentials.json
 python main.py --profile work setup --provider gmail
 python main.py --profile work fetch --limit 1000
-python main.py --profile work categorize
+python main.py --profile work classify
 
 # Personal email  
 python main.py profile create personal --description "Personal Gmail" --provider gmail
@@ -376,7 +376,7 @@ python main.py profile create personal --description "Personal Gmail" --provider
 cp ~/personal-credentials.json data/personal/credentials.json
 python main.py --profile personal setup --provider gmail
 python main.py --profile personal fetch --limit 500
-python main.py --profile personal categorize
+python main.py --profile personal classify
 
 # Switch between profiles using the active profile flag
 python main.py profile use work

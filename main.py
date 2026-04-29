@@ -148,8 +148,8 @@ def _enforce_required_categories(categories: dict) -> dict:
               help='Update the description of an existing category')
 @click.option('--delete', 'delete_name', metavar='NAME',
               help='Delete a category by name (personal and other cannot be deleted)')
-def categories(add_pair, edit_pair, delete_name):
-    """Manage email categories for AI classification."""
+def category(add_pair, edit_pair, delete_name):
+    """Manage email category definitions for AI classification."""
     from rich.table import Table
     from rich.console import Console
     console = Console()
@@ -529,8 +529,8 @@ def search(ctx, query: str, limit: int):
 @click.option('--recategorize', default=None, metavar='CATEGORY',
               help='Recategorize emails: "all" to redo everything, or a category name (e.g. "newsletter") to redo that category only. Omit to categorize only uncategorized emails.')
 @click.pass_context
-def categorize(ctx, limit: int, recategorize: str):
-    """Categorize emails using AI.
+def classify(ctx, limit: int, recategorize: str):
+    """Classify emails into categories using AI.
 
     By default only processes uncategorized emails.
     Use --recategorize to redo existing categories.
