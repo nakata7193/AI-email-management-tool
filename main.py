@@ -701,5 +701,79 @@ def organize(ctx, category: str, limit: int, dry_run: bool):
         logger.error(f"Organize error: {e}", exc_info=True)
 
 
+@cli.command()
+@click.option('--category', required=True, metavar='CATEGORY',
+              help='Delete all Gmail emails classified under this category (e.g. promotional)')
+@click.option('--limit', default=500, help='Maximum number of emails to delete (default: 500)')
+@click.option('--permanent', is_flag=True,
+              help='Permanently delete instead of moving to trash (cannot be undone)')
+@click.option('--dry-run', is_flag=True, help='Preview what would be deleted without making changes')
+@click.pass_context
+def delete(ctx, category: str, limit: int, permanent: bool, dry_run: bool):
+    """Delete all Gmail emails classified under a given category.
+
+    By default emails are moved to Trash and can be recovered. Use --permanent
+    to bypass trash and delete them immediately (cannot be undone).
+
+    Examples:
+
+    \b
+      python main.py delete --category promotional
+      python main.py delete --category newsletter --dry-run
+      python main.py delete --category receipt --permanent
+    """
+    profile = ctx.obj.get('profile')
+    config = get_config(profile)
+
+    # Validate category exists
+    categories = load_categories()
+    if category not in categories:
+        print_error(f"Unknown category '{category}'. Available: {', '.join(categories.keys())}")
+        return
+
+    try:
+        with ServiceContainer(config) as container:
+            service = container.email_service
+            gmail = container.get_provider('gmail')
+            gmail.connect()
+
+            if dry_run:
+                print_warning("Dry run — no emails will be deleted")
+
+            action = "permanently delete" if permanent else "move to trash"
+            print_info(f"Will {action} emails in category: {category}")
+
+            succeeded = 0
+            failed = 0
+
+            for i, total, subject, success in service.delete_emails_by_category(
+                gmail, category=category, limit=limit, permanent=permanent, dry_run=dry_run
+            ):
+                prefix = "[DRY RUN] " if dry_run else ""
+                if success:
+                    print_info(f"{prefix}[{i}/{total}] {subject[:60]!r}")
+                    succeeded += 1
+                else:
+                    print_error(f"{prefix}[{i}/{total}] Failed: {subject[:60]!r}")
+                    failed += 1
+
+            gmail.disconnect()
+
+            if succeeded or failed:
+                if dry_run:
+                    print_success(f"Dry run complete: {succeeded} emails would be deleted")
+                else:
+                    verb = "permanently deleted" if permanent else "moved to trash"
+                    print_success(f"Done! {succeeded} emails {verb}")
+                    if failed:
+                        print_warning(f"{failed} emails failed — check logs for details")
+            else:
+                print_warning(f"No emails found in category '{category}'. Run 'categorize' first.")
+
+    except Exception as e:
+        print_error(f"Delete failed: {e}")
+        logger.error(f"Delete error: {e}", exc_info=True)
+
+
 if __name__ == '__main__':
     cli()

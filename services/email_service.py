@@ -429,6 +429,45 @@ class EmailService:
 
             yield (i, total, email.get('subject', ''), cat, success)
 
+    def delete_emails_by_category(
+        self,
+        gmail,
+        category: str,
+        limit: int = 500,
+        permanent: bool = False,
+        dry_run: bool = False
+    ):
+        """Delete all Gmail emails in a given category.
+
+        Loads emails from the local DB filtered by category, then calls the
+        Gmail API to trash (or permanently delete) each one.
+
+        Args:
+            gmail: Connected GmailProvider instance
+            category: Category key to delete (e.g. 'promotional')
+            limit: Maximum number of emails to delete
+            permanent: If True, permanently delete. If False (default), move to trash.
+            dry_run: If True, yield progress without making Gmail API calls
+
+        Yields:
+            Tuple of (current_index, total, email_subject, success)
+        """
+        emails = self._cache.get_emails(limit=limit, category=category, provider='gmail')
+        emails = [e for e in emails if e.get('category') == category]
+
+        if not emails:
+            return
+
+        total = len(emails)
+
+        for i, email in enumerate(emails, 1):
+            if dry_run:
+                success = True
+            else:
+                success = gmail.delete_email(email['id'], permanent=permanent)
+
+            yield (i, total, email.get('subject', ''), success)
+
     def clean_old_emails(self, days: Optional[int] = None) -> int:
         """
         Clean emails older than specified days.

@@ -146,6 +146,18 @@ python main.py search "emails from my boss about project deadline"
 
 # Summarize a specific email
 python main.py summarize <email-id>
+
+# Delete all emails in a category (moves to trash by default)
+python main.py delete --category promotional
+
+# Preview what would be deleted without making changes
+python main.py delete --category newsletter --dry-run
+
+# Permanently delete (bypasses trash, cannot be undone)
+python main.py delete --category receipt --permanent
+
+# Limit how many emails to delete at once
+python main.py delete --category promotional --limit 100
 ```
 
 ### Managing Categories
