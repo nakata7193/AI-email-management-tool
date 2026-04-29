@@ -247,11 +247,13 @@ class GmailModifier:
     def create_label(self, name: str) -> Optional[str]:
         """Create a Gmail label and return its ID.
 
+        If a label with the same name already exists, returns its existing ID.
+
         Args:
             name: Label name to create
 
         Returns:
-            Label ID if created successfully, None on error
+            Label ID if successful, None on error
         """
         if not self._service:
             raise RuntimeError("Service not initialized. Call set_credentials() first.")
@@ -266,11 +268,21 @@ class GmailModifier:
             return label['id']
 
         except Exception as e:
+            # 409 means label already exists — look it up by name
+            status = getattr(getattr(e, 'resp', None), 'status', None)
+            if status == 409 or '409' in str(e):
+                existing = {label['name']: label['id'] for label in self.list_labels()}
+                if name in existing:
+                    logger.info(f"Label '{name}' already exists with ID {existing[name]}")
+                    return existing[name]
+
             logger.error(f"Error creating label '{name}': {e}")
             return None
 
     def ensure_labels(self, names: List[str]) -> Dict[str, str]:
         """Ensure all given labels exist in Gmail, creating missing ones.
+
+        Matching is case-insensitive so 'Newsletter' matches an existing 'newsletter' label.
 
         Args:
             names: List of label names to ensure exist
@@ -278,12 +290,15 @@ class GmailModifier:
         Returns:
             Dict mapping label name -> label ID for all requested labels
         """
-        existing = {label['name']: label['id'] for label in self.list_labels()}
+        all_labels = self.list_labels()
+        # Build case-insensitive lookup: lowercase_name -> (original_name, id)
+        existing_lower = {label['name'].lower(): label['id'] for label in all_labels}
         label_map: Dict[str, str] = {}
 
         for name in names:
-            if name in existing:
-                label_map[name] = existing[name]
+            existing_id = existing_lower.get(name.lower())
+            if existing_id:
+                label_map[name] = existing_id
             else:
                 label_id = self.create_label(name)
                 if label_id:
