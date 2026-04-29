@@ -5,6 +5,16 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
+# Single source of truth for valid email categories
+VALID_CATEGORIES: Dict[str, str] = {
+    'urgent': 'Requires immediate action or response',
+    'important': 'Needs attention soon but not urgent',
+    'newsletter': 'Bulk, marketing, or subscription content',
+    'receipts': 'Purchase confirmations, invoices, orders',
+    'social': 'Social media notifications and updates',
+    'can_wait': 'Low priority, can be addressed later',
+}
+
 @dataclass
 class Email:
     """Email data structure."""

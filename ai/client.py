@@ -47,17 +47,22 @@ class ClaudeClient:
     for all completions.
     """
 
-    def __init__(self, api_key: str, default_model: str = "claude-opus-4-6"):
+    def __init__(self, api_key: str, default_model: str = "claude-opus-4-6", base_url: Optional[str] = None):
         """Initialize Claude client.
 
         Args:
             api_key: Anthropic API key
             default_model: Default model to use for completions
+            base_url: Optional base URL override (e.g. for local proxy)
         """
         if not api_key:
             raise ValueError("Anthropic API key is required")
 
-        self._client = Anthropic(api_key=api_key)
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        self._client = Anthropic(**kwargs)
         self._default_model = default_model
 
     def complete(

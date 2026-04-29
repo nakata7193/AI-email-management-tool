@@ -5,17 +5,14 @@ from typing import List, Optional, Dict, Any, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
-from providers.base import EmailProvider, Email
+from providers.base import EmailProvider, Email, VALID_CATEGORIES
 from storage.cache import EmailCache
-from ai.categorizer import EmailCategorizer
+from ai.categorizer import EmailCategorizer, BATCH_SIZE
 from ai.summarizer import EmailSummarizer
 from ai.search import EmailSearcher
 
 
 logger = logging.getLogger(__name__)
-
-# Valid categories for validation
-VALID_CATEGORIES = {'urgent', 'important', 'newsletter', 'receipts', 'social', 'can_wait'}
 
 # Valid providers for validation
 VALID_PROVIDERS = {'gmail', 'imap'}
@@ -141,51 +138,74 @@ class EmailService:
         final_count = self._cache.get_count()
         self._logger.info(f"Fetch complete: {total_stored} emails stored, {final_count} total in DB")
 
-    def categorize_uncategorized_emails(
+    def categorize_emails(
         self,
         categorizer: EmailCategorizer,
-        limit: int
+        limit: int,
+        recategorize: Optional[str] = None
     ) -> Iterator[tuple[int, int, Dict[str, Any], str]]:
         """
-        Categorize emails without categories.
+        Categorize emails in batches of 100 per API call.
 
-        Yields progress updates for each email processed.
+        By default categorizes only uncategorized emails.
+        Pass recategorize='all' to redo all emails, or recategorize='newsletter'
+        to redo only emails currently in that category.
 
         Args:
             categorizer: Email categorizer instance
             limit: Maximum emails to categorize
+            recategorize: None = uncategorized only, 'all' = everything,
+                          or a category name to redo that category
 
         Yields:
             Tuple of (current_index, total_count, email_data, category)
         """
-        uncategorized = self._cache.get_uncategorized_emails(limit=limit)
+        if recategorize is None:
+            emails = self._cache.get_uncategorized_emails(limit=limit)
+        elif recategorize == 'all':
+            email_dicts = self._cache.get_emails(limit=limit)
+            emails = [Email.from_dict(e) for e in email_dicts]
+        else:
+            email_dicts = self._cache.get_emails(limit=limit, category=recategorize)
+            emails = [Email.from_dict(e) for e in email_dicts]
 
-        if not uncategorized:
+        if not emails:
             return
 
-        total = len(uncategorized)
+        total = len(emails)
+        processed = 0
 
-        for i, email_obj in enumerate(uncategorized, 1):
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch = emails[batch_start:batch_start + BATCH_SIZE]
+
             try:
-                result = categorizer.categorize(email_obj)
-
-                self._cache.update_category(
-                    email_obj.id,
-                    result['category'],
-                    result['reasoning']
-                )
-
-                yield (i, total, {
-                    'id': email_obj.id,
-                    'subject': email_obj.subject
-                }, result['category'])
-
+                batch_results = categorizer.batch_categorize(batch)
             except Exception as e:
-                self._logger.error(f"Failed to categorize email {email_obj.id}: {e}")
-                yield (i, total, {
+                self._logger.error(f"Batch failed at offset {batch_start}: {e}")
+                batch_results = {
+                    email.id: {'category': 'other', 'reasoning': str(e)}
+                    for email in batch
+                }
+
+            for email_obj in batch:
+                processed += 1
+                result = batch_results.get(email_obj.id, {'category': 'other', 'reasoning': ''})
+                category = result['category']
+
+                try:
+                    self._cache.update_category(
+                        email_obj.id,
+                        category,
+                        result.get('reasoning', '')
+                    )
+                except Exception as e:
+                    self._logger.error(f"Failed to save category for {email_obj.id}: {e}")
+                    category = 'ERROR'
+
+                yield (processed, total, {
                     'id': email_obj.id,
                     'subject': email_obj.subject
-                }, 'ERROR')
+                }, category)
 
     def search_emails(
         self,
@@ -257,7 +277,7 @@ class EmailService:
             )
 
         # Generate new summary
-        email_obj = self._dict_to_email(email_dict)
+        email_obj = Email.from_dict(email_dict)
         result = summarizer.summarize(email_obj)
 
         # Cache the summary
@@ -304,10 +324,14 @@ class EmailService:
             limit = 1000
 
         if category and category not in VALID_CATEGORIES:
-            raise ValueError(
-                f"Invalid category: {category}. "
-                f"Must be one of: {', '.join(VALID_CATEGORIES)}"
-            )
+            # Also check user-defined categories
+            from config import load_categories
+            active_categories = load_categories()
+            if category not in active_categories:
+                raise ValueError(
+                    f"Invalid category: {category}. "
+                    f"Must be one of: {', '.join(active_categories)}"
+                )
 
         if provider and provider not in VALID_PROVIDERS:
             raise ValueError(
@@ -342,6 +366,69 @@ class EmailService:
         uncategorized = self._cache.get_uncategorized_emails(limit=limit)
         return len(uncategorized)
 
+    def organize_emails(
+        self,
+        gmail,
+        category: Optional[str] = None,
+        limit: int = 500,
+        dry_run: bool = False
+    ) -> Iterator[tuple]:
+        """
+        Apply AI category labels to Gmail emails and move them out of inbox.
+
+        Reads categorized emails from local DB (provider=gmail), ensures Gmail labels
+        exist for each category, then applies the label and removes INBOX from each email.
+
+        Args:
+            gmail: Connected GmailProvider instance
+            category: Only process this category (None = all categories)
+            limit: Maximum number of emails to process
+            dry_run: If True, yield progress without making Gmail API calls
+
+        Yields:
+            Tuple of (current_index, total, email_subject, category, success)
+        """
+        emails = self._cache.get_emails(limit=limit, category=category, provider='gmail')
+        # Only process emails that actually have a category set
+        emails = [e for e in emails if e.get('category')]
+
+        if not emails:
+            return
+
+        # Build label map upfront: category_key -> Gmail label ID
+        # Gmail label names are derived from category keys (e.g. concert_tickets -> Concert Tickets)
+        from config import category_to_folder
+        categories_needed = (
+            [category] if category
+            else list({e['category'] for e in emails})
+        )
+        folder_names = {cat: category_to_folder(cat) for cat in categories_needed}
+
+        if not dry_run:
+            label_map = gmail.ensure_labels(list(folder_names.values()))
+            # Remap: category_key -> label_id (via folder name)
+            label_map = {cat: label_map[folder] for cat, folder in folder_names.items() if folder in label_map}
+        else:
+            label_map = {cat: f'<dry-run-id:{cat}>' for cat in categories_needed}
+
+        total = len(emails)
+
+        for i, email in enumerate(emails, 1):
+            cat = email['category']
+            label_id = label_map.get(cat)
+
+            if not label_id:
+                self._logger.warning(f"No label ID for category '{cat}', skipping email {email['id']}")
+                yield (i, total, email.get('subject', ''), cat, False)
+                continue
+
+            if dry_run:
+                success = True
+            else:
+                success = gmail.apply_category_label(email['id'], label_id)
+
+            yield (i, total, email.get('subject', ''), cat, success)
+
     def clean_old_emails(self, days: Optional[int] = None) -> int:
         """
         Clean emails older than specified days.
@@ -353,7 +440,3 @@ class EmailService:
             Number of emails deleted
         """
         return self._cache.clean_old_emails(days)
-
-    def _dict_to_email(self, data: dict) -> Email:
-        """Convert dictionary to Email object using centralized logic."""
-        return Email.from_dict(data)

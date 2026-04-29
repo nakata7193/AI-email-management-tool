@@ -6,13 +6,14 @@ Principle and makes the code more testable and maintainable.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from providers.base import EmailProvider, Email
 from providers.gmail_components.authenticator import GmailAuthenticator
 from providers.gmail_components.parser import GmailMessageParser
 from providers.gmail_components.fetcher import GmailFetcher
 from providers.gmail_components.modifier import GmailModifier
+from providers.gmail_components.analyzer import GmailAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class GmailProvider(EmailProvider):
         self._parser = GmailMessageParser()
         self._fetcher = GmailFetcher(self._parser)
         self._modifier = GmailModifier(self._parser)
+        self._analyzer = GmailAnalyzer()
 
     def connect(self) -> None:
         """Establish connection to Gmail API."""
@@ -55,6 +57,7 @@ class GmailProvider(EmailProvider):
             # Initialize components with credentials
             self._fetcher.set_credentials(creds)
             self._modifier.set_credentials(creds)
+            self._analyzer.set_credentials(creds)
 
             self._connected = True
             logger.info("Connected to Gmail API")
@@ -154,7 +157,7 @@ class GmailProvider(EmailProvider):
         if not self._connected:
             raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        return self._fetcher.analyze_top_senders(limit)
+        return self._analyzer.analyze_top_senders(limit)
 
     def mark_as_read(self, email_id: str) -> bool:
         """Mark a Gmail message as read.
@@ -287,6 +290,43 @@ class GmailProvider(EmailProvider):
             raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
         return self._modifier.list_labels()
+
+    def ensure_labels(self, names: List[str]) -> Dict[str, str]:
+        """Ensure all labels exist in Gmail, creating any that are missing.
+
+        Args:
+            names: Label names to ensure exist
+
+        Returns:
+            Dict mapping label name -> label ID
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.ensure_labels(names)
+
+    def apply_category_label(
+        self,
+        email_id: str,
+        label_id: str,
+    ) -> bool:
+        """Apply a category label to an email and remove it from INBOX.
+
+        Args:
+            email_id: Gmail message ID
+            label_id: Gmail label ID to apply
+
+        Returns:
+            True if successful
+        """
+        if not self._connected:
+            raise ConnectionError("Not connected to Gmail API. Call connect() first.")
+
+        return self._modifier.move_email(
+            email_id,
+            add_labels=[label_id],
+            remove_labels=['INBOX']
+        )
 
     def get_email_by_id(self, email_id: str) -> Optional[Email]:
         """Retrieve a specific Gmail message by ID.

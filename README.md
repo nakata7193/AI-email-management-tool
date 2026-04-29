@@ -42,6 +42,9 @@ Create a `.env` file:
 # Required: Claude API key for AI features
 ANTHROPIC_API_KEY=your-api-key-here
 
+# Optional: Use a local Claude proxy (e.g. for testing)
+# ANTHROPIC_BASE_URL=http://localhost:6655/anthropic
+
 # Optional: Application settings
 MAX_FETCH_EMAILS=100
 CACHE_MAX_AGE_DAYS=30
@@ -69,8 +72,9 @@ python main.py --profile myemail setup --provider gmail
 # Fetch your emails
 python main.py --profile myemail fetch --limit 100
 
-# View your inbox
-python main.py --profile myemail inbox
+# Search or categorize
+python main.py --profile myemail categorize
+python main.py --profile myemail search "emails about invoices"
 ```
 
 ## 📖 Usage
@@ -91,14 +95,15 @@ python main.py profile list
 # Set active profile (default for all commands)
 python main.py profile use work
 
-# Use specific profile
-python main.py --profile work inbox
-
 # Delete a profile
 python main.py profile delete oldaccount
 ```
 
 ### Fetching Emails
+
+Fetched emails are stored in your local SQLite database. Both plain text and HTML-only emails
+are fully supported — HTML bodies are automatically converted to plain text during fetch so the
+AI can read them.
 
 ```bash
 # Fetch emails (uses active profile)
@@ -114,44 +119,71 @@ python main.py fetch --unread-only --limit 100
 python main.py fetch --limit 5000 --batch-size 100
 ```
 
-### Viewing Emails
-
-```bash
-# View inbox
-python main.py inbox
-
-# View only unread
-python main.py inbox --unread
-
-# Filter by category
-python main.py inbox --category urgent
-
-# Limit results
-python main.py inbox --limit 20
-```
-
 ### AI Features
 
 ```bash
-# Categorize all emails
-python main.py categorize-all --limit 100
+# Categorize only uncategorized emails (default)
+# Sends up to 100 emails per API call for efficiency
+python main.py categorize
+
+# Recategorize all emails
+python main.py categorize --recategorize all
+
+# Recategorize emails in a specific category
+python main.py categorize --recategorize newsletter
+
+# Apply categories as Gmail labels and move emails out of inbox
+python main.py organize
+
+# Preview what would be moved (no changes made)
+python main.py organize --dry-run
+
+# Organize only a specific category
+python main.py organize --category newsletter
 
 # Search with natural language
 python main.py search "emails from my boss about project deadline"
 
 # Summarize a specific email
 python main.py summarize <email-id>
-
-# View statistics
-python main.py stats
 ```
+
+### Managing Categories
+
+Categories define how the AI classifies your emails and what Gmail label folders are created.
+`personal` and `other` are always present and cannot be removed.
+
+Category keys use underscores (e.g. `concert_tickets`) and are automatically formatted as
+Gmail folder names (e.g. `Concert Tickets`).
+
+```bash
+# Interactive setup — view and edit all categories
+python main.py categories
+
+# Add a new category
+python main.py categories --add receipt "Purchase confirmations and invoices"
+python main.py categories --add "concert tickets" "Live music and event tickets"
+
+# Edit an existing category's description
+python main.py categories --edit promotional "Marketing emails and sales offers"
+
+# Delete a category
+python main.py categories --delete work
+```
+
+**Category → Gmail folder mapping:**
+
+| Category key      | Gmail folder      |
+|-------------------|-------------------|
+| `newsletter`      | Newsletter        |
+| `concert_tickets` | Concert Tickets   |
+| `account_security`| Account Security  |
+| `personal`        | Personal          |
+| `other`           | Other             |
 
 ### Gmail-Specific Features
 
 ```bash
-# Direct Gmail search (uses Gmail's search syntax)
-python main.py gmail-search "from:user@example.com has:attachment"
-
 # Analyze top senders (fast, metadata only)
 python main.py analyze-senders --top 20 --min-count 10
 
@@ -162,9 +194,17 @@ python main.py analyze-senders --all
 ### Maintenance
 
 ```bash
-# Clean old emails from cache
-python main.py clean --days 30
+# Clean old emails from local cache (default: 30 days)
+python main.py clean
+
+# Keep only emails fetched in the last 60 days
+python main.py clean --days 60
+
+# Clean specific profile
+python main.py --profile work clean --days 90
 ```
+
+**Important:** The `clean` command only removes emails from your local SQLite database. Your emails in Gmail/IMAP remain untouched. You can always re-fetch deleted emails using the `fetch` command.
 
 ## 🔧 Gmail API Setup
 
@@ -197,15 +237,15 @@ python main.py clean --days 30
 AI-email-management-tool/
 ├── main.py                    # CLI entry point
 ├── config.py                  # Configuration management
+├── email_config.json          # User-defined categories (created by `categories` command)
 ├── requirements.txt           # Python dependencies
 ├── .env                       # Environment variables (excluded from git)
 │
 ├── data/                      # User data (excluded from git)
-│   ├── {profile}/            # Profile-specific directories
-│   │   ├── credentials.json  # Gmail OAuth2 credentials
-│   │   ├── token.json       # Authentication token
-│   │   └── email_cache.db   # SQLite database
-│   └── README.md            # Data directory guide
+│   └── {profile}/            # Profile-specific directories
+│       ├── credentials.json  # Gmail OAuth2 credentials
+│       ├── token.json       # Authentication token
+│       └── email_cache.db   # SQLite database
 │
 ├── ai/                       # AI components
 │   ├── client.py            # AI client abstraction
@@ -225,11 +265,15 @@ AI-email-management-tool/
 │       ├── authenticator.py # OAuth2 authentication
 │       ├── parser.py        # Message parsing
 │       ├── fetcher.py       # Email fetching
-│       └── modifier.py      # Email modification
+│       ├── modifier.py      # Email modification
+│       └── analyzer.py      # Sender/metadata analysis
 │
 ├── storage/                  # Data persistence
 │   ├── cache.py             # SQLite operations
 │   └── schema.sql           # Database schema
+│
+├── utils/                    # Shared utilities
+│   └── formatting.py        # Rich console formatting
 │
 ├── docs/                     # Documentation
 │   ├── ARCHITECTURE.md      # Architecture guide
@@ -237,8 +281,6 @@ AI-email-management-tool/
 │   ├── USER_BASED_DATA_SETUP.md
 │   └── PROJECT_STRUCTURE.md
 │
-├── scripts/                  # Utility scripts
-├── archive/                  # Old/deprecated code
 └── tests/                    # Test files
 ```
 
@@ -313,6 +355,7 @@ python main.py profile create work --description "Work Gmail" --provider gmail
 cp ~/work-credentials.json data/work/credentials.json
 python main.py --profile work setup --provider gmail
 python main.py --profile work fetch --limit 1000
+python main.py --profile work categorize
 
 # Personal email  
 python main.py profile create personal --description "Personal Gmail" --provider gmail
@@ -321,13 +364,14 @@ python main.py profile create personal --description "Personal Gmail" --provider
 cp ~/personal-credentials.json data/personal/credentials.json
 python main.py --profile personal setup --provider gmail
 python main.py --profile personal fetch --limit 500
+python main.py --profile personal categorize
 
-# Switch between profiles
+# Switch between profiles using the active profile flag
 python main.py profile use work
-python main.py inbox  # Shows work inbox
+python main.py search "budget report"
 
 python main.py profile use personal
-python main.py inbox  # Shows personal inbox
+python main.py search "family photos"
 ```
 
 ## 🐛 Troubleshooting
@@ -355,8 +399,8 @@ python main.py --help
 python main.py profile list
 ls data/
 
-# Use correct profile
-python main.py --profile yourprofile stats
+# Fetch emails for the profile
+python main.py --profile yourprofile fetch --limit 100
 ```
 
 ### Network errors during fetch

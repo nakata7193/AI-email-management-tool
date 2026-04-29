@@ -125,6 +125,23 @@ class IMAPProvider(EmailProvider):
             labels=[]
         )
 
+    def _find_message_id(self, email_id: str) -> Optional[bytes]:
+        """Select INBOX and find IMAP message number by Message-ID header.
+
+        Args:
+            email_id: Email Message-ID header value
+
+        Returns:
+            IMAP message number bytes, or None if not found
+        """
+        self.connection.select("INBOX")
+        status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+
+        if status != "OK" or not messages[0]:
+            return None
+
+        return messages[0].split()[0]
+
     def fetch_emails(self, limit: int = 100, unread_only: bool = False) -> List[Email]:
         """Fetch emails from IMAP server."""
         if not self.connection:
@@ -172,15 +189,12 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            # Search for email by Message-ID
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 logger.warning(f"Email {email_id} not found")
                 return False
 
-            msg_id = messages[0].split()[0]
             self.connection.store(msg_id, '+FLAGS', '\\Seen')
             logger.info(f"Marked email {email_id} as read")
             return True
@@ -195,15 +209,12 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 return None
 
-            msg_id = messages[0].split()[0]
             status, msg_data = self.connection.fetch(msg_id, "(RFC822)")
-
             if status == "OK":
                 return self._parse_email_message(msg_data[0][1])
 
@@ -219,14 +230,12 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 logger.warning(f"Email {email_id} not found")
                 return False
 
-            msg_id = messages[0].split()[0]
             self.connection.store(msg_id, '-FLAGS', '\\Seen')
             logger.info(f"Marked email {email_id} as unread")
             return True
@@ -256,20 +265,15 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 logger.warning(f"Email {email_id} not found")
                 return False
 
-            msg_id = messages[0].split()[0]
-
-            # Mark for deletion
             self.connection.store(msg_id, '+FLAGS', '\\Deleted')
             logger.info(f"Marked email {email_id} for deletion")
 
-            # Permanently remove if requested
             if expunge:
                 self.connection.expunge()
                 logger.info(f"Permanently deleted email {email_id}")
@@ -301,22 +305,17 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 logger.warning(f"Email {email_id} not found")
                 return False
 
-            msg_id = messages[0].split()[0]
-
-            # Copy to destination folder
             result = self.connection.copy(msg_id, destination_folder)
             if result[0] != 'OK':
                 logger.error(f"Failed to copy email to {destination_folder}")
                 return False
 
-            # Delete from source (INBOX)
             self.connection.store(msg_id, '+FLAGS', '\\Deleted')
             self.connection.expunge()
 
@@ -342,14 +341,11 @@ class IMAPProvider(EmailProvider):
             raise ConnectionError("Not connected to IMAP server")
 
         try:
-            self.connection.select("INBOX")
-            status, messages = self.connection.search(None, f'HEADER Message-ID "{email_id}"')
+            msg_id = self._find_message_id(email_id)
 
-            if status != "OK" or not messages[0]:
+            if not msg_id:
                 logger.warning(f"Email {email_id} not found")
                 return False
-
-            msg_id = messages[0].split()[0]
 
             if flagged:
                 self.connection.store(msg_id, '+FLAGS', '\\Flagged')

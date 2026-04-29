@@ -384,7 +384,7 @@ class EmailCache:
             email_objects = []
             for email_data in uncategorized:
                 try:
-                    email_obj = self._dict_to_email(email_data)
+                    email_obj = Email.from_dict(email_data)
                     email_objects.append(email_obj)
                 except Exception as e:
                     logger.warning(f"Failed to convert email {email_data.get('id')}: {e}")
@@ -416,10 +416,6 @@ class EmailCache:
         except Exception as e:
             logger.error(f"Failed to execute search query: {e}")
             return []
-
-    def _dict_to_email(self, data: dict) -> Email:
-        """Convert dictionary to Email object using centralized logic."""
-        return Email.from_dict(data)
 
     def get_emails_by_sender(self, sender: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

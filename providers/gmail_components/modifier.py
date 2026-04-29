@@ -1,7 +1,7 @@
 """Gmail email modifier - handles email actions like mark read, delete, etc."""
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -243,6 +243,55 @@ class GmailModifier:
         except Exception as e:
             logger.error(f"Error listing labels: {e}")
             return []
+
+    def create_label(self, name: str) -> Optional[str]:
+        """Create a Gmail label and return its ID.
+
+        Args:
+            name: Label name to create
+
+        Returns:
+            Label ID if created successfully, None on error
+        """
+        if not self._service:
+            raise RuntimeError("Service not initialized. Call set_credentials() first.")
+
+        try:
+            label = self._service.users().labels().create(
+                userId='me',
+                body={'name': name, 'labelListVisibility': 'labelShow', 'messageListVisibility': 'show'}
+            ).execute()
+
+            logger.info(f"Created label '{name}' with ID {label['id']}")
+            return label['id']
+
+        except Exception as e:
+            logger.error(f"Error creating label '{name}': {e}")
+            return None
+
+    def ensure_labels(self, names: List[str]) -> Dict[str, str]:
+        """Ensure all given labels exist in Gmail, creating missing ones.
+
+        Args:
+            names: List of label names to ensure exist
+
+        Returns:
+            Dict mapping label name -> label ID for all requested labels
+        """
+        existing = {label['name']: label['id'] for label in self.list_labels()}
+        label_map: Dict[str, str] = {}
+
+        for name in names:
+            if name in existing:
+                label_map[name] = existing[name]
+            else:
+                label_id = self.create_label(name)
+                if label_id:
+                    label_map[name] = label_id
+                else:
+                    logger.warning(f"Could not create label '{name}', skipping")
+
+        return label_map
 
     def get_email_by_id(self, email_id: str) -> Optional[Email]:
         """Retrieve a specific Gmail message by ID.

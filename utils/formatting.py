@@ -226,6 +226,49 @@ def print_warning(message: str) -> None:
     """Print warning message."""
     console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
 
+
+def print_sender_table(sender_counts: dict, top: int, min_count: int) -> None:
+    """Display top email senders in a formatted table.
+
+    Args:
+        sender_counts: Dictionary mapping sender to email count
+        top: Maximum number of senders to display
+        min_count: Minimum email count to include a sender
+    """
+    sorted_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)
+    filtered_senders = [(s, c) for s, c in sorted_senders if c >= min_count]
+
+    if not filtered_senders:
+        console.print(f"[yellow]No senders with at least {min_count} emails[/yellow]")
+        return
+
+    total_analyzed = sum(sender_counts.values())
+
+    table = Table(show_header=True, header_style="bold magenta", title=f"Top {top} Email Senders")
+    table.add_column("Rank", style="dim", width=6)
+    table.add_column("Sender", style="cyan", width=60)
+    table.add_column("Count", style="yellow", width=10, justify="right")
+    table.add_column("% of Total", style="green", width=12, justify="right")
+
+    for i, (sender, count) in enumerate(filtered_senders[:top], 1):
+        percentage = (count / total_analyzed) * 100
+        display_name = sender[:58] + "..." if len(sender) > 60 else sender
+        table.add_row(f"#{i}", display_name, str(count), f"{percentage:.1f}%")
+
+    console.print()
+    console.print(table)
+    console.print()
+
+    top_n_total = sum(count for _, count in filtered_senders[:top])
+    top_n_percentage = (top_n_total / total_analyzed) * 100
+
+    console.print(f"[bold blue]📊 Summary:[/bold blue]")
+    console.print(f"   • Total emails analyzed: {total_analyzed:,}")
+    console.print(f"   • Unique senders: {len(sender_counts):,}")
+    console.print(f"   • Top {top} senders: {top_n_total:,} emails ({top_n_percentage:.1f}% of total)")
+    console.print(f"   • Senders with {min_count}+ emails: {len(filtered_senders)}")
+
+
 def confirm(message: str) -> bool:
     """
     Ask user for confirmation.

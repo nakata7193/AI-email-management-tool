@@ -81,8 +81,11 @@ class ServiceContainer:
             AIClient instance (singleton per container)
         """
         if not self._ai_client:
-            api_key = self._config['claude'].api_key
-            self._ai_client = ClaudeClient(api_key)
+            claude_config = self._config['claude']
+            self._ai_client = ClaudeClient(
+                api_key=claude_config.api_key,
+                base_url=claude_config.base_url
+            )
             logger.debug("Created ClaudeClient")
         return self._ai_client
 

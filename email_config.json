@@ -1,0 +1,12 @@
+{
+  "categories": {
+    "receipt": "Purchase confirmation, order receipt, invoice, payment confirmation",
+    "account_security": "Password reset, login alert, 2FA, security warning",
+    "promotional": "Marketing, sale, discount, promotional offer",
+    "newsletter": "Newsletter, digest, weekly or daily update",
+    "personal": "Personal message, direct communication",
+    "other": "Does not fit any other category",
+    "work": "Work-related emails, tasks, meetings",
+    "concert_tickets": "Concert and live event tickets"
+  }
+}

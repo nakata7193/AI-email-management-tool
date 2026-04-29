@@ -1,28 +1,26 @@
 """Email categorization using Claude API."""
 
+import re
 import logging
-from typing import Dict, Optional
+from typing import Dict, List
 from ai.client import AIClient
 from providers.base import Email
 from parsers.email_parser import EmailParser
 
 logger = logging.getLogger(__name__)
 
+BATCH_SIZE = 100
+
+
 class EmailCategorizer:
     """AI-powered email categorization.
 
     Separates business logic (prompt building, parsing) from I/O (API calls).
     AI client is injected, making this class easy to test and provider-agnostic.
-    """
 
-    CATEGORIES = {
-        'urgent': 'Requires immediate action or response',
-        'important': 'Needs attention soon but not urgent',
-        'newsletter': 'Bulk, marketing, or subscription content',
-        'receipts': 'Purchase confirmations, invoices, orders',
-        'social': 'Social media notifications and updates',
-        'can_wait': 'Low priority, can be addressed later'
-    }
+    Categories are loaded from email_config.json at runtime, falling back to
+    built-in defaults if the file doesn't exist.
+    """
 
     def __init__(self, ai_client: AIClient):
         """Initialize categorizer with AI client.
@@ -33,9 +31,16 @@ class EmailCategorizer:
         self._client = ai_client
         self._parser = EmailParser()
 
+    def _get_categories(self) -> Dict[str, str]:
+        """Load categories from config (with fallback to defaults)."""
+        from config import load_categories
+        return load_categories()
+
     def categorize(self, email: Email) -> Dict[str, str]:
-        """
-        Categorize an email using AI.
+        """Categorize a single email using AI.
+
+        Used for one-off operations (e.g. summarize context).
+        For bulk categorization use batch_categorize() instead.
 
         Args:
             email: Email object to categorize
@@ -43,112 +48,129 @@ class EmailCategorizer:
         Returns:
             Dictionary with 'category' and 'reasoning' keys
         """
+        categories = self._get_categories()
+
         try:
-            # Prepare email content
             body = self._prepare_body(email)
-
-            # Build categorization prompt
-            prompt = self._build_categorization_prompt(email, body)
-
-            # Call AI (injected dependency handles I/O)
-            result_text = self._client.complete(prompt, max_tokens=500)
-
-            # Parse response
-            return self._parse_categorization_response(result_text)
+            prompt = self._build_single_prompt(email, body, categories)
+            result_text = self._client.complete(prompt, max_tokens=200)
+            return self._parse_single_response(result_text, categories)
 
         except Exception as e:
             logger.error(f"Categorization failed for email {email.id}: {e}")
+            fallback = next(iter(categories), 'other')
             return {
-                'category': 'can_wait',
+                'category': fallback,
                 'reasoning': f'Error during categorization: {str(e)}'
             }
 
-    def _prepare_body(self, email: Email) -> str:
-        """Prepare email body for AI processing.
+    def batch_categorize(self, emails: List[Email]) -> Dict[str, Dict[str, str]]:
+        """Categorize multiple emails in batches of 100 per API call.
 
-        Pure function - testable without API calls.
+        Sends up to BATCH_SIZE emails in a single compact prompt, getting back
+        one category per line. Much cheaper and faster than one call per email.
 
         Args:
-            email: Email object
+            emails: List of Email objects to categorize
 
         Returns:
-            Cleaned and truncated email body
+            Dict mapping email ID -> {'category': str, 'reasoning': str}
         """
-        # Convert HTML to text if needed
+        categories = self._get_categories()
+        results: Dict[str, Dict[str, str]] = {}
+        fallback = next(iter(categories), 'other')
+
+        for batch_start in range(0, len(emails), BATCH_SIZE):
+            batch = emails[batch_start:batch_start + BATCH_SIZE]
+
+            try:
+                prompt = self._build_batch_prompt(batch, categories)
+                max_tokens = len(batch) * 20  # ~20 tokens per output line
+                response_text = self._client.complete(prompt, max_tokens=max_tokens)
+                batch_results = self._parse_batch_response(response_text, batch, categories)
+                results.update(batch_results)
+
+            except Exception as e:
+                logger.error(f"Batch categorization failed for batch starting at {batch_start}: {e}")
+                for email in batch:
+                    results[email.id] = {
+                        'category': fallback,
+                        'reasoning': f'Batch categorization error: {str(e)}'
+                    }
+
+        return results
+
+    def _prepare_body(self, email: Email) -> str:
+        """Prepare email body for AI processing."""
         body = email.body
         if not body and email.html_body:
             body = self._parser.html_to_text(email.html_body)
-
-        # Extract main content (remove quoted replies)
-        main_content, _ = self._parser.extract_quoted_reply(body)
-
-        # Truncate for AI processing
+        main_content, _ = self._parser.extract_quoted_reply(body or '')
         return self._parser.truncate_for_ai(main_content, max_chars=5000)
 
-    def _build_categorization_prompt(self, email: Email, body: str) -> str:
-        """Build the categorization prompt.
-
-        Pure function - testable without API calls.
-
-        Args:
-            email: Email object
-            body: Prepared email body
-
-        Returns:
-            Formatted prompt string
-        """
-        categories_desc = '\n'.join([
-            f"- **{cat}**: {desc}"
-            for cat, desc in self.CATEGORIES.items()
-        ])
+    def _build_single_prompt(self, email: Email, body: str, categories: Dict[str, str]) -> str:
+        """Build prompt for single-email categorization."""
+        categories_desc = '\n'.join(
+            f"- **{cat}**: {desc}" for cat, desc in categories.items()
+        )
 
         return f"""Analyze this email and categorize it into one of the predefined categories.
 
 **Email Details:**
 - **Subject:** {email.subject}
 - **From:** {email.sender}
-- **To:** {email.recipient}
 - **Body:**
 {body}
 
 **Available Categories:**
 {categories_desc}
 
-**Instructions:**
-1. Choose the MOST appropriate category from the list above
-2. Provide clear reasoning for your choice
-3. Consider urgency, sender importance, and content type
-
 **Response Format:**
 Category: [category_name]
-Reasoning: [your reasoning in 1-2 sentences]
+Reasoning: [your reasoning in 1-2 sentences]"""
 
-Respond now with your categorization."""
+    def _build_batch_prompt(self, emails: List[Email], categories: Dict[str, str]) -> str:
+        """Build compact batch prompt for multiple emails in one API call."""
+        email_summaries = []
+        for i, email in enumerate(emails, 1):
+            body = email.body or ''
+            if not body and email.html_body:
+                body = self._parser.html_to_text(email.html_body)
+            body = body[:400]
+            email_summaries.append(
+                f"{i}. Subject: {email.subject}\n"
+                f"   From: {email.sender}\n"
+                f"   Body: {body}"
+            )
 
-    def _parse_categorization_response(self, response_text: str) -> Dict[str, str]:
-        """Parse AI categorization response.
+        category_names = ', '.join(categories.keys())
 
-        Pure function - testable without API calls.
+        return f"""Categorize these {len(emails)} emails.
 
-        Args:
-            response_text: Raw AI response
+{chr(10).join(email_summaries)}
 
-        Returns:
-            Dictionary with 'category' and 'reasoning' keys
-        """
-        category = 'can_wait'  # Default
+Categories (use ONLY these, use "other" if unsure): {category_names}
+
+Response: one line per email
+<number>. <category>
+
+Example:
+1. newsletter
+2. receipt
+3. other"""
+
+    def _parse_single_response(self, response_text: str, categories: Dict[str, str]) -> Dict[str, str]:
+        """Parse single-email categorization response."""
+        fallback = next(iter(categories), 'other')
+        category = fallback
         reasoning = ''
 
-        lines = response_text.strip().split('\n')
-
-        for line in lines:
+        for line in response_text.strip().split('\n'):
             line = line.strip()
-
             if line.lower().startswith('category:'):
                 cat = line.split(':', 1)[1].strip().lower()
-                if cat in self.CATEGORIES:
+                if cat in categories:
                     category = cat
-
             elif line.lower().startswith('reasoning:'):
                 reasoning = line.split(':', 1)[1].strip()
 
@@ -157,30 +179,35 @@ Respond now with your categorization."""
             'reasoning': reasoning or 'No reasoning provided'
         }
 
-    def batch_categorize(self, emails: list[Email], use_prompt_caching: bool = True) -> Dict[str, Dict[str, str]]:
+    def _parse_batch_response(
+        self,
+        response_text: str,
+        emails: List[Email],
+        categories: Dict[str, str]
+    ) -> Dict[str, Dict[str, str]]:
+        """Parse batch categorization response.
+
+        Maps `N. category` lines back to email IDs by position.
+        Falls back to last category if a line is missing or unrecognised.
         """
-        Categorize multiple emails efficiently.
+        fallback = next(iter(categories), 'other')
+        # Build index: position -> category
+        position_map: Dict[int, str] = {}
 
-        Args:
-            emails: List of emails to categorize
-            use_prompt_caching: Enable prompt caching for efficiency
+        for line in response_text.strip().split('\n'):
+            line = line.strip()
+            match = re.match(r'^(\d+)\.\s+(\S+)', line)
+            if match:
+                pos = int(match.group(1))
+                cat = match.group(2).lower().rstrip('.,;')
+                position_map[pos] = cat if cat in categories else fallback
 
-        Returns:
-            Dictionary mapping email IDs to categorization results
-        """
-        results = {}
+        results: Dict[str, Dict[str, str]] = {}
+        for i, email in enumerate(emails, 1):
+            category = position_map.get(i, fallback)
+            results[email.id] = {
+                'category': category,
+                'reasoning': 'Batch categorized'
+            }
 
-        for email in emails:
-            try:
-                result = self.categorize(email)
-                results[email.id] = result
-
-            except Exception as e:
-                logger.error(f"Failed to categorize email {email.id}: {e}")
-                results[email.id] = {
-                    'category': 'can_wait',
-                    'reasoning': f'Batch categorization error: {str(e)}'
-                }
-
-        logger.info(f"Categorized {len(results)} emails")
         return results

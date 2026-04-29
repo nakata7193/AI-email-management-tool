@@ -4,6 +4,7 @@ import os
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -16,6 +17,53 @@ logger = logging.getLogger(__name__)
 
 # Profile configuration file
 PROFILES_FILE = Path.home() / ".claude" / "email-tool-profiles.json"
+
+# Path to user-defined categories config
+EMAIL_CONFIG_FILE = Path("email_config.json")
+
+
+def category_to_folder(name: str) -> str:
+    """Convert a category key to a properly formatted Gmail folder name.
+
+    Examples:
+        'promotional'      -> 'Promotional'
+        'concert_tickets'  -> 'Concert Tickets'
+        'account_security' -> 'Account Security'
+    """
+    return name.replace('_', ' ').title()
+
+
+def load_categories() -> dict:
+    """Load email categories from email_config.json, falling back to defaults.
+
+    Returns:
+        Dict mapping category name -> description
+    """
+    if EMAIL_CONFIG_FILE.exists():
+        try:
+            with open(EMAIL_CONFIG_FILE) as f:
+                config = json.load(f)
+            categories = config.get('categories', {})
+            if categories:
+                return categories
+        except Exception as e:
+            logger.warning(f"Could not read {EMAIL_CONFIG_FILE}: {e}, using defaults")
+
+    # Fallback to hardcoded defaults
+    from providers.base import VALID_CATEGORIES
+    return VALID_CATEGORIES
+
+
+def save_categories(categories: dict) -> None:
+    """Save categories to email_config.json.
+
+    Args:
+        categories: Dict mapping category name -> description
+    """
+    config = {'categories': categories}
+    with open(EMAIL_CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+    logger.info(f"Saved {len(categories)} categories to {EMAIL_CONFIG_FILE}")
 
 @dataclass
 class GmailConfig:
@@ -67,13 +115,17 @@ class IMAPConfig:
 class ClaudeConfig:
     """Claude API configuration."""
     api_key: str
+    base_url: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "ClaudeConfig":
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY must be set in .env file")
-        return cls(api_key=api_key)
+        return cls(
+            api_key=api_key,
+            base_url=os.getenv("ANTHROPIC_BASE_URL")
+        )
 
 @dataclass
 class DatabaseConfig:
@@ -137,7 +189,7 @@ class ProfileManager:
         self.data["profiles"][name] = {
             "description": description,
             "provider": provider,
-            "created_at": str(Path(__file__).stat().st_mtime)
+            "created_at": datetime.now().isoformat()
         }
         self._save_profiles()
 

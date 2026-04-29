@@ -81,9 +81,9 @@ class GmailMessageParser:
             return datetime.now()
 
     def _extract_body(self, payload: Dict[str, Any]) -> str:
-        """Extract plain text body from message payload.
+        """Extract body from message payload.
 
-        Recursively searches for text/plain parts.
+        Prefers text/plain. Falls back to text/html converted to plain text.
 
         Args:
             payload: Gmail message payload
@@ -91,23 +91,39 @@ class GmailMessageParser:
         Returns:
             Plain text body (empty string if not found)
         """
-        body = ""
+        plain = ""
+        html = ""
 
         def _extract_recursive(part: Dict[str, Any]) -> None:
-            nonlocal body
+            nonlocal plain, html
 
             if 'parts' in part:
                 for subpart in part['parts']:
                     _extract_recursive(subpart)
             else:
                 mime_type = part.get('mimeType', '')
-                if 'data' in part.get('body', {}):
-                    data = part['body']['data']
-                    decoded = urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                data = part.get('body', {}).get('data')
+                if not data:
+                    return
+                decoded = urlsafe_b64decode(data).decode('utf-8', errors='ignore')
 
-                    # Only take first plain text part
-                    if mime_type == 'text/plain' and not body:
-                        body = decoded
+                if mime_type == 'text/plain' and not plain:
+                    plain = decoded
+                elif mime_type == 'text/html' and not html:
+                    html = decoded
 
         _extract_recursive(payload)
-        return body
+
+        if plain:
+            return plain
+
+        # Fall back to HTML converted to plain text
+        if html:
+            try:
+                from parsers.email_parser import EmailParser
+                return EmailParser().html_to_text(html)
+            except Exception:
+                import re
+                return re.sub(r'<[^>]+>', ' ', html).strip()
+
+        return ""
