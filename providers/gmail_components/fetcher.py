@@ -1,7 +1,6 @@
 """Gmail email fetcher with parallel processing and retry logic."""
 
 import logging
-import time
 from typing import List, Optional
 from socket import gaierror
 from urllib.error import URLError
@@ -14,8 +13,21 @@ from googleapiclient.errors import HttpError
 
 from providers.base import Email
 from providers.gmail_components.parser import GmailMessageParser
+from providers.retry import with_retry
 
 logger = logging.getLogger(__name__)
+
+# Exception types that indicate a transient network problem worth retrying.
+_NETWORK_ERRORS = (ConnectionError, gaierror, URLError, RemoteDisconnected, OSError)
+
+# Backoff schedules (both capped at 5 minutes).
+def _network_backoff(attempt: int) -> float:
+    """Exponential backoff for network errors: 60s, 120s, 240s, 300s, …"""
+    return min(30 * (2 ** attempt), 300)
+
+def _rate_limit_backoff(attempt: int) -> float:
+    """Linear backoff for rate-limit errors: 60s, 120s, 180s, 240s, 300s."""
+    return min(60 * attempt, 300)
 
 
 class GmailFetcher:
@@ -115,75 +127,66 @@ class GmailFetcher:
     def fetch_single_email(self, message_id: str) -> Optional[Email]:
         """Fetch a single email with retry logic.
 
-        Thread-safe - creates own service instance.
+        Thread-safe — creates its own service instance.
+
+        Retries on transient network errors (exponential backoff) and Gmail
+        rate-limit responses (linear backoff). Returns None for permanent
+        failures (non-retryable HTTP errors, unknown exceptions).
 
         Args:
             message_id: Gmail message ID
 
         Returns:
-            Email object or None if fetch failed
+            Email object or None if the fetch ultimately failed
         """
-        retry_count = 0
-        max_retries = 5
-
-        # Create thread-safe service instance
         service = self._get_thread_safe_service()
 
-        while retry_count < max_retries:
-            try:
-                msg = service.users().messages().get(
-                    userId='me',
-                    id=message_id,
-                    format='full'
-                ).execute()
+        def _fetch():
+            return service.users().messages().get(
+                userId='me',
+                id=message_id,
+                format='full'
+            ).execute()
 
-                return self._parser.parse(msg)
+        # --- network errors: exponential backoff ---
+        try:
+            raw = with_retry(
+                _fetch,
+                max_retries=5,
+                retryable=_NETWORK_ERRORS,
+                backoff_fn=_network_backoff,
+                logger=logger,
+                label=f"fetch message {message_id}",
+            )
+            return self._parser.parse(raw)
 
-            except (ConnectionError, gaierror, URLError, RemoteDisconnected, OSError) as e:
-                retry_count += 1
-                wait_time = min(30 * (2 ** retry_count), 300)
+        except _NETWORK_ERRORS as e:
+            logger.error(f"Network failure for message {message_id} after all retries: {e}")
+            return None
 
-                if retry_count < max_retries:
-                    logger.warning(
-                        f"Network error fetching message {message_id} "
-                        f"(attempt {retry_count}/{max_retries}): {e}"
+        except HttpError as e:
+            if e.resp.status in (429, 503):
+                # --- rate-limit errors: linear backoff ---
+                try:
+                    raw = with_retry(
+                        _fetch,
+                        max_retries=5,
+                        retryable=(HttpError,),
+                        backoff_fn=_rate_limit_backoff,
+                        logger=logger,
+                        label=f"fetch message {message_id} (rate-limited)",
                     )
-                    logger.info(f"Waiting {wait_time} seconds before retry...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(
-                        f"Failed to fetch message {message_id} "
-                        f"after {max_retries} attempts: {e}"
-                    )
+                    return self._parser.parse(raw)
+                except HttpError as e2:
+                    logger.error(f"Rate-limit failure for message {message_id} after all retries: {e2}")
                     return None
-
-            except HttpError as e:
-                if e.resp.status in [429, 503]:
-                    retry_count += 1
-                    wait_time = min(60 * retry_count, 300)
-
-                    if retry_count < max_retries:
-                        logger.warning(
-                            f"Gmail API rate limit hit "
-                            f"(attempt {retry_count}/{max_retries})"
-                        )
-                        logger.info(f"Waiting {wait_time} seconds...")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(
-                            f"Failed to fetch message {message_id} "
-                            f"after {max_retries} rate limit retries"
-                        )
-                        return None
-                else:
-                    logger.warning(f"HTTP error fetching message {message_id}: {e}")
-                    return None
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch message {message_id}: {e}")
+            else:
+                logger.warning(f"HTTP error fetching message {message_id}: {e}")
                 return None
 
-        return None
+        except Exception as e:
+            logger.warning(f"Failed to fetch message {message_id}: {e}")
+            return None
 
     def fetch_emails_by_ids(
         self,
