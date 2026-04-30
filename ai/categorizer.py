@@ -16,27 +16,21 @@ class EmailCategorizer:
     """AI-powered email categorization.
 
     Separates business logic (prompt building, parsing) from I/O (API calls).
-    AI client and content preparer are injected, making this class easy to
-    test and provider-agnostic.
-
-    Categories are loaded from email_config.json at runtime, falling back to
-    built-in defaults if the file doesn't exist.
+    AI client, content preparer, and categories are all injected, making this
+    class fully testable without filesystem access.
     """
 
-    def __init__(self, ai_client: AIClient, preparer: ContentPreparer):
-        """Initialize categorizer with AI client and content preparer.
+    def __init__(self, ai_client: AIClient, preparer: ContentPreparer, categories: Dict[str, str]):
+        """Initialize categorizer with AI client, content preparer, and categories.
 
         Args:
             ai_client: AI client implementation (injected dependency)
             preparer: Content preparer for cleaning email bodies (injected dependency)
+            categories: Mapping of category name -> description (injected dependency)
         """
         self._client = ai_client
         self._preparer = preparer
-
-    def _get_categories(self) -> Dict[str, str]:
-        """Load categories from config (with fallback to defaults)."""
-        from config import load_categories
-        return load_categories()
+        self._categories = categories
 
     def categorize(self, email: Email) -> Dict[str, str]:
         """Categorize a single email using AI.
@@ -50,7 +44,7 @@ class EmailCategorizer:
         Returns:
             Dictionary with 'category' and 'reasoning' keys
         """
-        categories = self._get_categories()
+        categories = self._categories
 
         try:
             body = self._preparer.prepare(email.body, email.html_body, max_chars=5000)
@@ -78,7 +72,7 @@ class EmailCategorizer:
         Returns:
             Dict mapping email ID -> {'category': str, 'reasoning': str}
         """
-        categories = self._get_categories()
+        categories = self._categories
         results: Dict[str, Dict[str, str]] = {}
         fallback = next(iter(categories), 'other')
 

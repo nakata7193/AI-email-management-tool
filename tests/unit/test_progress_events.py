@@ -62,10 +62,17 @@ def make_email_dict(email_id="id-1", subject="Test Subject", category="newslette
     }
 
 
+CATEGORIES = {
+    'urgent': 'Requires immediate action',
+    'newsletter': 'Marketing content',
+    'other': 'Does not fit other categories',
+}
+
+
 def make_service(cache=None):
     if cache is None:
         cache = MagicMock()
-    return EmailService(cache)
+    return EmailService(cache, CATEGORIES)
 
 
 # ---------------------------------------------------------------------------

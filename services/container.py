@@ -18,6 +18,7 @@ from ai.categorizer import EmailCategorizer
 from ai.summarizer import EmailSummarizer
 from ai.search import EmailSearcher
 from parsers.email_parser import EmailContentPreparer, ContentPreparer
+from config import load_categories
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,19 @@ class ServiceContainer:
         self._categorizer: Optional[EmailCategorizer] = None
         self._summarizer: Optional[EmailSummarizer] = None
         self._searcher: Optional[EmailSearcher] = None
+        self._categories: Optional[dict] = None
+
+    @property
+    def categories(self) -> dict:
+        """Get or load email categories (singleton per container).
+
+        Returns:
+            Dict mapping category name -> description, loaded once from config
+        """
+        if self._categories is None:
+            self._categories = load_categories()
+            logger.debug(f"Loaded {len(self._categories)} categories from config")
+        return self._categories
 
     @property
     def cache(self) -> EmailCache:
@@ -71,7 +85,7 @@ class ServiceContainer:
             EmailService instance (singleton per container)
         """
         if not self._email_service:
-            self._email_service = EmailService(self.cache)
+            self._email_service = EmailService(self.cache, self.categories)
             logger.debug("Created EmailService")
         return self._email_service
 
@@ -111,7 +125,7 @@ class ServiceContainer:
             EmailCategorizer instance (singleton per container)
         """
         if not self._categorizer:
-            self._categorizer = EmailCategorizer(self.ai_client, self.preparer)
+            self._categorizer = EmailCategorizer(self.ai_client, self.preparer, self.categories)
             logger.debug("Created EmailCategorizer")
         return self._categorizer
 

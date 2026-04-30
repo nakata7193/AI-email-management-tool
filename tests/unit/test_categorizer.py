@@ -46,9 +46,7 @@ class TestEmailCategorizerCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.return_value = ai_response
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
-        return cat
+        return EmailCategorizer(client, preparer, CATEGORIES)
 
     def test_returns_valid_category(self):
         cat = self._make_categorizer("Category: urgent\nReasoning: Action needed")
@@ -74,8 +72,7 @@ class TestEmailCategorizerCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.side_effect = Exception("API error")
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         result = cat.categorize(make_email())
         self.assertIn(result['category'], CATEGORIES)
         self.assertIn('Error', result['reasoning'])
@@ -84,8 +81,7 @@ class TestEmailCategorizerCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.return_value = "Category: other\nReasoning: test"
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         cat.categorize(make_email(subject="My Subject", sender="boss@corp.com"))
         prompt = client.complete.call_args[0][0]
         self.assertIn("My Subject", prompt)
@@ -96,8 +92,7 @@ class TestEmailCategorizerCategorize(unittest.TestCase):
         client.complete.return_value = "Category: other\nReasoning: test"
         preparer = MagicMock()
         preparer.prepare.return_value = "PREPARED_BODY"
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         cat.categorize(make_email(body="raw body"))
         preparer.prepare.assert_called_once_with("raw body", None, max_chars=5000)
         prompt = client.complete.call_args[0][0]
@@ -108,8 +103,7 @@ class TestEmailCategorizerCategorize(unittest.TestCase):
         client.complete.return_value = "Category: other\nReasoning: test"
         preparer = MagicMock()
         preparer.prepare.return_value = "HTML_PREPARED"
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         cat.categorize(make_email(body="", html_body="<html>HTML</html>"))
         preparer.prepare.assert_called_once_with("", "<html>HTML</html>", max_chars=5000)
 
@@ -120,9 +114,7 @@ class TestEmailCategorizerBatchCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.return_value = ai_response
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
-        return cat
+        return EmailCategorizer(client, preparer, CATEGORIES)
 
     def test_returns_result_for_every_email(self):
         emails = [make_email() for _ in range(3)]
@@ -169,8 +161,7 @@ class TestEmailCategorizerBatchCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.return_value = response_lines
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         cat.batch_categorize(emails)
         self.assertEqual(client.complete.call_count, 2)  # 150 emails = 2 batches
 
@@ -181,8 +172,7 @@ class TestEmailCategorizerBatchCategorize(unittest.TestCase):
         client.complete.return_value = "1. other"
         preparer = MagicMock()
         preparer.prepare.return_value = "BATCH_BODY"
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         cat.batch_categorize(emails)
         preparer.prepare.assert_called_once_with("body", None, max_chars=400)
 
@@ -193,8 +183,7 @@ class TestEmailCategorizerBatchCategorize(unittest.TestCase):
         client = MagicMock()
         client.complete.side_effect = Exception("API down")
         preparer = EmailContentPreparer()
-        cat = EmailCategorizer(client, preparer)
-        cat._get_categories = MagicMock(return_value=CATEGORIES)
+        cat = EmailCategorizer(client, preparer, CATEGORIES)
         results = cat.batch_categorize(emails)
         for i in range(3):
             self.assertIn(results[f"id-{i}"]["category"], CATEGORIES)

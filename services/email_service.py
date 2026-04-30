@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
-from providers.base import EmailProvider, Email, VALID_CATEGORIES
+from providers.base import EmailProvider, Email
 from storage.cache import EmailCache
 from ai.categorizer import EmailCategorizer, BATCH_SIZE
 from ai.summarizer import EmailSummarizer
@@ -108,8 +108,9 @@ class EmailService:
     formatting) and storage concerns (SQL queries, transactions).
     """
 
-    def __init__(self, cache: EmailCache) -> None:
+    def __init__(self, cache: EmailCache, categories: Dict[str, Any]) -> None:
         self._cache = cache
+        self._categories = categories
         self._logger = logger
 
     def fetch_and_store_emails(
@@ -366,15 +367,11 @@ class EmailService:
             self._logger.warning(f"Large limit requested: {limit}, clamping to 1000")
             limit = 1000
 
-        if category and category not in VALID_CATEGORIES:
-            # Also check user-defined categories
-            from config import load_categories
-            active_categories = load_categories()
-            if category not in active_categories:
-                raise ValueError(
-                    f"Invalid category: {category}. "
-                    f"Must be one of: {', '.join(active_categories)}"
-                )
+        if category and category not in self._categories:
+            raise ValueError(
+                f"Invalid category: {category}. "
+                f"Must be one of: {', '.join(self._categories)}"
+            )
 
         if provider and provider not in VALID_PROVIDERS:
             raise ValueError(
