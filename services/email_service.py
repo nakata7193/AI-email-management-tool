@@ -20,7 +20,7 @@ VALID_PROVIDERS = {'gmail', 'imap'}
 
 @dataclass
 class ProgressUpdate:
-    """Progress update for batch operations."""
+    """Progress update for batch fetch operations."""
     batch_num: int
     total_stored: int
     total_requested: int
@@ -56,6 +56,42 @@ class SummaryResult:
     summary: str
     action_items: Optional[str]
     from_cache: bool
+
+
+# --- Progress events for generator-based operations ---
+
+@dataclass
+class ProgressEvent:
+    """Base class for per-item progress events from generator operations.
+
+    All generator-based service methods yield subclasses of this type,
+    giving callers a stable interface for the common fields (index, total)
+    while concrete subclasses carry operation-specific fields.
+    """
+    index: int
+    total: int
+
+
+@dataclass
+class CategorizeProgress(ProgressEvent):
+    """Yielded once per email during categorize_emails()."""
+    subject: str
+    category: str
+
+
+@dataclass
+class OrganizeProgress(ProgressEvent):
+    """Yielded once per email during organize_emails()."""
+    subject: str
+    category: str
+    success: bool
+
+
+@dataclass
+class DeleteProgress(ProgressEvent):
+    """Yielded once per email during delete_emails_by_category()."""
+    subject: str
+    success: bool
 
 
 class EmailService:
@@ -148,7 +184,7 @@ class EmailService:
         categorizer: EmailCategorizer,
         limit: int,
         recategorize: Optional[str] = None
-    ) -> Iterator[tuple[int, int, Dict[str, Any], str]]:
+    ) -> Iterator[CategorizeProgress]:
         """
         Categorize emails in batches of 100 per API call.
 
@@ -163,7 +199,7 @@ class EmailService:
                           or a category name to redo that category
 
         Yields:
-            Tuple of (current_index, total_count, email_data, category)
+            CategorizeProgress after each email is processed
         """
         if recategorize is None:
             emails = self._cache.get_uncategorized_emails(limit=limit)
@@ -207,10 +243,12 @@ class EmailService:
                     self._logger.error(f"Failed to save category for {email_obj.id}: {e}")
                     category = 'ERROR'
 
-                yield (processed, total, {
-                    'id': email_obj.id,
-                    'subject': email_obj.subject
-                }, category)
+                yield CategorizeProgress(
+                    index=processed,
+                    total=total,
+                    subject=email_obj.subject,
+                    category=category,
+                )
 
     def search_emails(
         self,
@@ -377,7 +415,7 @@ class EmailService:
         category: Optional[str] = None,
         limit: int = 500,
         dry_run: bool = False
-    ) -> Iterator[tuple]:
+    ) -> Iterator[OrganizeProgress]:
         """
         Apply AI category labels to Gmail emails and move them out of inbox.
 
@@ -391,7 +429,7 @@ class EmailService:
             dry_run: If True, yield progress without making Gmail API calls
 
         Yields:
-            Tuple of (current_index, total, email_subject, category, success)
+            OrganizeProgress after each email is processed
         """
         emails = self._cache.get_emails(limit=limit, category=category, provider='gmail')
         # Only process emails that actually have a category set
@@ -424,7 +462,7 @@ class EmailService:
 
             if not label_id:
                 self._logger.warning(f"No label ID for category '{cat}', skipping email {email['id']}")
-                yield (i, total, email.get('subject', ''), cat, False)
+                yield OrganizeProgress(index=i, total=total, subject=email.get('subject', ''), category=cat, success=False)
                 continue
 
             if dry_run:
@@ -432,7 +470,7 @@ class EmailService:
             else:
                 success = gmail.apply_category_label(email['id'], label_id)
 
-            yield (i, total, email.get('subject', ''), cat, success)
+            yield OrganizeProgress(index=i, total=total, subject=email.get('subject', ''), category=cat, success=success)
 
     def delete_emails_by_category(
         self,
@@ -441,7 +479,7 @@ class EmailService:
         limit: int = 500,
         permanent: bool = False,
         dry_run: bool = False
-    ):
+    ) -> Iterator[DeleteProgress]:
         """Delete all Gmail emails in a given category.
 
         Loads emails from the local DB filtered by category, then calls the
@@ -455,7 +493,7 @@ class EmailService:
             dry_run: If True, yield progress without making Gmail API calls
 
         Yields:
-            Tuple of (current_index, total, email_subject, success)
+            DeleteProgress after each email is processed
         """
         emails = self._cache.get_emails(limit=limit, category=category, provider='gmail')
         emails = [e for e in emails if e.get('category') == category]
@@ -471,7 +509,7 @@ class EmailService:
             else:
                 success = gmail.delete_email(email['id'], permanent=permanent)
 
-            yield (i, total, email.get('subject', ''), success)
+            yield DeleteProgress(index=i, total=total, subject=email.get('subject', ''), success=success)
 
     def clean_old_emails(self, days: Optional[int] = None) -> int:
         """

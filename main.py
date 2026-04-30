@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from services.container import ServiceContainer
+from services.email_service import ProgressEvent, CategorizeProgress, OrganizeProgress, DeleteProgress
 from utils.formatting import (
     print_email_table, print_summary,
     print_success, print_error, print_info, print_warning,
@@ -28,6 +29,30 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _print_progress(event: ProgressEvent, dry_run: bool = False) -> None:
+    """Print a per-item progress line for any generator-based operation."""
+    prefix = "[DRY RUN] " if dry_run else ""
+    label = f"[{event.index}/{event.total}]"
+
+    if isinstance(event, CategorizeProgress):
+        if event.category == 'ERROR':
+            print_error(f"{label} Failed: {event.subject[:50]}")
+        else:
+            print_info(f"{label} {event.subject[:50]} → {event.category}")
+
+    elif isinstance(event, OrganizeProgress):
+        if event.success:
+            print_info(f"{prefix}{label} {event.subject[:50]!r} → {event.category}")
+        else:
+            print_error(f"{prefix}{label} Failed: {event.subject[:50]!r}")
+
+    elif isinstance(event, DeleteProgress):
+        if event.success:
+            print_info(f"{prefix}{label} {event.subject[:60]!r}")
+        else:
+            print_error(f"{prefix}{label} Failed: {event.subject[:60]!r}")
 
 
 class CustomGroup(click.Group):
@@ -544,12 +569,9 @@ def classify(ctx, limit: int, recategorize: str):
                 print_info(f"Categorizing {count} uncategorized emails...")
 
             processed = 0
-            for i, total, email_data, category in service.categorize_emails(categorizer, limit, recategorize):
-                processed = i
-                if category == 'ERROR':
-                    print_error(f"[{i}/{total}] Failed: {email_data['subject'][:50]}...")
-                else:
-                    print_info(f"[{i}/{total}] {email_data['subject'][:50]}... → {category}")
+            for event in service.categorize_emails(categorizer, limit, recategorize):
+                processed = event.index
+                _print_progress(event)
 
             if processed:
                 print_success(f"Done! Processed {processed} emails")
@@ -665,15 +687,13 @@ def organize(ctx, category: str, limit: int, dry_run: bool):
             succeeded = 0
             failed = 0
 
-            for i, total, subject, cat, success in service.organize_emails(
+            for event in service.organize_emails(
                 gmail, category=category, limit=limit, dry_run=dry_run
             ):
-                prefix = "[DRY RUN] " if dry_run else ""
-                if success:
-                    print_info(f"{prefix}[{i}/{total}] {subject[:50]!r} → {cat}")
+                _print_progress(event, dry_run)
+                if event.success:
                     succeeded += 1
                 else:
-                    print_error(f"{prefix}[{i}/{total}] Failed: {subject[:50]!r}")
                     failed += 1
 
             gmail.disconnect()
@@ -739,15 +759,13 @@ def delete(ctx, category: str, limit: int, permanent: bool, dry_run: bool):
             succeeded = 0
             failed = 0
 
-            for i, total, subject, success in service.delete_emails_by_category(
+            for event in service.delete_emails_by_category(
                 gmail, category=category, limit=limit, permanent=permanent, dry_run=dry_run
             ):
-                prefix = "[DRY RUN] " if dry_run else ""
-                if success:
-                    print_info(f"{prefix}[{i}/{total}] {subject[:60]!r}")
+                _print_progress(event, dry_run)
+                if event.success:
                     succeeded += 1
                 else:
-                    print_error(f"{prefix}[{i}/{total}] Failed: {subject[:60]!r}")
                     failed += 1
 
             gmail.disconnect()
@@ -835,13 +853,10 @@ def run(ctx, limit: int, since: str, dry_run: bool, verbose: bool):
             if uncategorized == 0:
                 print_info("All emails already classified")
             else:
-                for i, total, email_data, category in service.categorize_emails(categorizer, limit):
-                    classified_count = i
+                for event in service.categorize_emails(categorizer, limit):
+                    classified_count = event.index
                     if verbose:
-                        if category == 'ERROR':
-                            print_error(f"[{i}/{total}] Failed: {email_data['subject'][:50]}")
-                        else:
-                            print_info(f"[{i}/{total}] {email_data['subject'][:50]} → {category}")
+                        _print_progress(event)
                 print_success(f"Classified: {classified_count} emails")
 
     except Exception as e:
@@ -859,17 +874,11 @@ def run(ctx, limit: int, since: str, dry_run: bool, verbose: bool):
             gmail = container.get_provider('gmail')
             gmail.connect()
 
-            for i, total, subject, cat, success in service.organize_emails(
-                gmail, dry_run=dry_run
-            ):
-                if success:
+            for event in service.organize_emails(gmail, dry_run=dry_run):
+                if event.success:
                     organized_count += 1
                 if verbose:
-                    prefix = "[DRY RUN] " if dry_run else ""
-                    if success:
-                        print_info(f"{prefix}[{i}/{total}] {subject[:50]!r} → {cat}")
-                    else:
-                        print_error(f"{prefix}[{i}/{total}] Failed: {subject[:50]!r}")
+                    _print_progress(event, dry_run)
 
             gmail.disconnect()
             print_success(f"Organized: {organized_count} emails")
