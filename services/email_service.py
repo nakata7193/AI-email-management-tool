@@ -82,7 +82,8 @@ class EmailService:
         provider_name: str,
         limit: int,
         batch_size: int,
-        unread_only: bool
+        unread_only: bool,
+        since: Optional[str] = None
     ) -> Iterator[ProgressUpdate]:
         """
         Fetch emails in batches and store to cache.
@@ -95,6 +96,7 @@ class EmailService:
             limit: Maximum emails to fetch
             batch_size: Emails per batch
             unread_only: Only fetch unread emails
+            since: Only fetch emails after this date (YYYY/MM/DD, Gmail only)
 
         Yields:
             ProgressUpdate after each batch completes
@@ -105,7 +107,10 @@ class EmailService:
 
         while remaining > 0:
             fetch_size = min(batch_size, remaining)
-            emails = provider.fetch_emails(limit=fetch_size, unread_only=unread_only)
+            fetch_kwargs = dict(limit=fetch_size, unread_only=unread_only)
+            if since and hasattr(provider, '_fetcher'):
+                fetch_kwargs['since'] = since
+            emails = provider.fetch_emails(**fetch_kwargs)
 
             if not emails:
                 self._logger.info("No more emails to fetch")

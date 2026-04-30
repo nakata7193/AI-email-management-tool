@@ -75,7 +75,8 @@ class GmailProvider(EmailProvider):
         self,
         limit: int = 100,
         unread_only: bool = False,
-        max_workers: int = 10
+        max_workers: int = 10,
+        since: Optional[str] = None
     ) -> List[Email]:
         """Fetch emails from Gmail.
 
@@ -83,6 +84,7 @@ class GmailProvider(EmailProvider):
             limit: Maximum number of emails to fetch
             unread_only: Only fetch unread emails
             max_workers: Number of parallel workers
+            since: Only fetch emails after this date (YYYY/MM/DD)
 
         Returns:
             List of Email objects
@@ -90,7 +92,7 @@ class GmailProvider(EmailProvider):
         if not self._connected:
             raise ConnectionError("Not connected to Gmail API. Call connect() first.")
 
-        return self._fetcher.fetch_emails(limit, unread_only, max_workers)
+        return self._fetcher.fetch_emails(limit, unread_only, max_workers, since)
 
     def get_all_message_ids(
         self,

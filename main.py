@@ -8,6 +8,7 @@ Business logic lives in services/email_service.py.
 Object creation is handled by services/container.py.
 """
 
+import sys
 import click
 import logging
 from typing import Optional
@@ -394,18 +395,18 @@ def profile_delete(name: str):
 @click.option('--limit', default=50, help='Maximum number of emails to fetch')
 @click.option('--unread-only', is_flag=True, help='Only fetch unread emails')
 @click.option('--batch-size', default=100, help='Number of emails to store per batch')
+@click.option('--since', default=None, metavar='YYYY/MM/DD',
+              help='Only fetch emails received after this date (Gmail only)')
 @click.pass_context
-def fetch(ctx, provider: str, limit: int, unread_only: bool, batch_size: int):
+def fetch(ctx, provider: str, limit: int, unread_only: bool, batch_size: int, since: str):
     """Fetch emails from provider and store in local database."""
     profile = ctx.obj.get('profile')
     config = get_config(profile)
 
     try:
-        # Create container
         with ServiceContainer(config) as container:
             service = container.email_service
 
-            # Determine which providers to fetch from
             providers_to_fetch = []
 
             if provider == 'all' or provider == 'gmail':
@@ -415,54 +416,44 @@ def fetch(ctx, provider: str, limit: int, unread_only: bool, batch_size: int):
                 providers_to_fetch.append(('imap', container.get_provider('imap')))
 
             total_fetched = 0
+            progress = None
 
             for provider_name, provider_obj in providers_to_fetch:
                 try:
                     print_info(f"Fetching emails from {provider_name}...")
-                    if profile:
-                        print_info(f"Using profile: {profile}")
-
+                    if since:
+                        print_info(f"Only emails after: {since}")
                     if limit > 1000:
-                        print_info(f"Large fetch: {limit} emails with parallel processing")
-                        print_info(f"Batch size: {batch_size} emails per commit")
+                        print_info(f"Large fetch: {limit} emails, batch size: {batch_size}")
 
                     provider_obj.connect()
 
-                    # Use service layer for fetching
                     for progress in service.fetch_and_store_emails(
-                        provider_obj,
-                        provider_name,
-                        limit,
-                        batch_size,
-                        unread_only
+                        provider_obj, provider_name, limit, batch_size, unread_only, since
                     ):
                         print_success(
-                            f"Batch {progress.batch_num}: Fetched & stored {progress.total_stored}/{progress.total_requested}. "
-                            f"DB total: {progress.db_count}"
+                            f"Batch {progress.batch_num}: stored {progress.total_stored}/{progress.total_requested} "
+                            f"(DB total: {progress.db_count})"
                         )
 
-                    # Get final counts
                     provider_count = container.cache.get_count(provider=provider_name)
-                    total_fetched += progress.total_stored
-
+                    total_fetched += progress.total_stored if progress else 0
                     provider_obj.disconnect()
-                    print_success(f"✓ Successfully fetched and stored {progress.total_stored} emails from {provider_name}")
-                    print_info(f"✓ Database verification: {provider_count} {provider_name} emails in DB")
+
+                    fetched = progress.total_stored if progress else 0
+                    print_success(f"Fetched {fetched} emails from {provider_name} ({provider_count} total in DB)")
 
                 except Exception as e:
                     print_error(f"Failed to fetch from {provider_name}: {e}")
                     logger.error(f"Fetch error for {provider_name}: {e}", exc_info=True)
 
-            # Final total count
             final_count = container.cache.get_count()
-
-            print_success(f"✓ Total emails fetched: {total_fetched}")
-            print_success(f"✓ Total emails in database: {final_count}")
-            print_info(f"Database location: {config['database'].path}")
+            print_success(f"Done — fetched: {total_fetched}, total in DB: {final_count}")
 
     except Exception as e:
         print_error(f"Fetch failed: {e}")
         logger.error(f"Fetch error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 @cli.command()
@@ -568,6 +559,7 @@ def classify(ctx, limit: int, recategorize: str):
     except Exception as e:
         print_error(f"Categorization failed: {e}")
         logger.error(f"Categorization error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 @cli.command()
@@ -699,6 +691,7 @@ def organize(ctx, category: str, limit: int, dry_run: bool):
     except Exception as e:
         print_error(f"Organize failed: {e}")
         logger.error(f"Organize error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 @cli.command()
@@ -773,6 +766,124 @@ def delete(ctx, category: str, limit: int, permanent: bool, dry_run: bool):
     except Exception as e:
         print_error(f"Delete failed: {e}")
         logger.error(f"Delete error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option('--limit', default=100, help='Maximum emails to fetch (default: 100)')
+@click.option('--since', default=None, metavar='YYYY/MM/DD',
+              help='Only fetch emails after this date')
+@click.option('--dry-run', is_flag=True, help='Preview organize step without applying changes to Gmail')
+@click.option('--verbose', is_flag=True, help='Print per-email progress for each step')
+@click.pass_context
+def run(ctx, limit: int, since: str, dry_run: bool, verbose: bool):
+    """Run the full pipeline: fetch → classify → organize.
+
+    Single entrypoint for automated/scheduled runs (e.g. n8n, cron).
+    Exits with code 1 if any step fails.
+
+    Example:
+
+    \b
+      python main.py --profile atanas run --since 2026/04/01
+      python main.py --profile atanas run --limit 200 --dry-run
+      python main.py --profile atanas run --verbose
+    """
+    profile = ctx.obj.get('profile')
+    config = get_config(profile)
+
+    print_info("=== Email pipeline starting ===")
+    if since:
+        print_info(f"Fetching emails after: {since}")
+
+    fetch_count = 0
+    classified_count = 0
+    organized_count = 0
+
+    # ── Step 1: Fetch ────────────────────────────────────────────────────────
+    print_info("\n[1/3] Fetching emails...")
+    try:
+        with ServiceContainer(config) as container:
+            service = container.email_service
+            gmail = container.get_provider('gmail')
+            gmail.connect()
+
+            progress = None
+            for progress in service.fetch_and_store_emails(
+                gmail, 'gmail', limit, 100, False, since
+            ):
+                if verbose:
+                    print_info(f"Batch {progress.batch_num}: stored {progress.total_stored}/{progress.total_requested}")
+
+            gmail.disconnect()
+            fetch_count = progress.total_stored if progress else 0
+            print_success(f"Fetched: {fetch_count} emails")
+
+    except Exception as e:
+        print_error(f"Fetch step failed: {e}")
+        logger.error(f"run/fetch error: {e}", exc_info=True)
+        sys.exit(1)
+
+    # ── Step 2: Classify ─────────────────────────────────────────────────────
+    print_info("\n[2/3] Classifying emails...")
+    try:
+        with ServiceContainer(config) as container:
+            service = container.email_service
+            categorizer = container.categorizer
+
+            uncategorized = service.get_uncategorized_count(limit=limit)
+            if uncategorized == 0:
+                print_info("All emails already classified")
+            else:
+                for i, total, email_data, category in service.categorize_emails(categorizer, limit):
+                    classified_count = i
+                    if verbose:
+                        if category == 'ERROR':
+                            print_error(f"[{i}/{total}] Failed: {email_data['subject'][:50]}")
+                        else:
+                            print_info(f"[{i}/{total}] {email_data['subject'][:50]} → {category}")
+                print_success(f"Classified: {classified_count} emails")
+
+    except Exception as e:
+        print_error(f"Classify step failed: {e}")
+        logger.error(f"run/classify error: {e}", exc_info=True)
+        sys.exit(1)
+
+    # ── Step 3: Organize ─────────────────────────────────────────────────────
+    print_info("\n[3/3] Organizing emails into Gmail labels...")
+    if dry_run:
+        print_warning("Dry run — no changes will be made to Gmail")
+    try:
+        with ServiceContainer(config) as container:
+            service = container.email_service
+            gmail = container.get_provider('gmail')
+            gmail.connect()
+
+            for i, total, subject, cat, success in service.organize_emails(
+                gmail, dry_run=dry_run
+            ):
+                if success:
+                    organized_count += 1
+                if verbose:
+                    prefix = "[DRY RUN] " if dry_run else ""
+                    if success:
+                        print_info(f"{prefix}[{i}/{total}] {subject[:50]!r} → {cat}")
+                    else:
+                        print_error(f"{prefix}[{i}/{total}] Failed: {subject[:50]!r}")
+
+            gmail.disconnect()
+            print_success(f"Organized: {organized_count} emails")
+
+    except Exception as e:
+        print_error(f"Organize step failed: {e}")
+        logger.error(f"run/organize error: {e}", exc_info=True)
+        sys.exit(1)
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    print_success(
+        f"\n=== Pipeline complete — "
+        f"fetched: {fetch_count}, classified: {classified_count}, organized: {organized_count} ==="
+    )
 
 
 if __name__ == '__main__':

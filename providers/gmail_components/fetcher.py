@@ -58,13 +58,15 @@ class GmailFetcher:
     def get_all_message_ids(
         self,
         limit: Optional[int] = None,
-        unread_only: bool = False
+        unread_only: bool = False,
+        since: Optional[str] = None
     ) -> List[str]:
         """Get message IDs from inbox (lightweight, no content).
 
         Args:
             limit: Maximum number of IDs to return (None = all)
             unread_only: Only get unread message IDs
+            since: Only fetch emails after this date (YYYY/MM/DD format for Gmail query)
 
         Returns:
             List of message IDs
@@ -72,7 +74,12 @@ class GmailFetcher:
         if not self._service:
             raise RuntimeError("Service not initialized. Call set_credentials() first.")
 
-        query = 'is:unread' if unread_only else ''
+        parts = []
+        if unread_only:
+            parts.append('is:unread')
+        if since:
+            parts.append(f'after:{since}')
+        query = ' '.join(parts)
         all_ids = []
         page_token = None
 
@@ -229,7 +236,8 @@ class GmailFetcher:
         self,
         limit: int = 100,
         unread_only: bool = False,
-        max_workers: int = 10
+        max_workers: int = 10,
+        since: Optional[str] = None
     ) -> List[Email]:
         """Fetch emails from Gmail with parallel processing.
 
@@ -237,6 +245,7 @@ class GmailFetcher:
             limit: Maximum number of emails to fetch
             unread_only: Only fetch unread emails
             max_workers: Number of parallel workers (default: 10)
+            since: Only fetch emails after this date (YYYY/MM/DD)
 
         Returns:
             List of Email objects
@@ -246,7 +255,12 @@ class GmailFetcher:
 
         try:
             # Build query
-            query = 'is:unread' if unread_only else ''
+            parts = []
+            if unread_only:
+                parts.append('is:unread')
+            if since:
+                parts.append(f'after:{since}')
+            query = ' '.join(parts)
 
             # Fetch message IDs using pagination
             all_messages = []

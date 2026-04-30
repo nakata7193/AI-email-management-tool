@@ -72,7 +72,10 @@ python main.py --profile myemail setup --provider gmail
 # Fetch your emails
 python main.py --profile myemail fetch --limit 100
 
-# Search or classify
+# Run the full pipeline (fetch → classify → organize)
+python main.py --profile myemail run
+
+# Or step by step
 python main.py --profile myemail classify
 python main.py --profile myemail search "emails about invoices"
 ```
@@ -115,8 +118,35 @@ python main.py --profile work fetch --limit 50
 # Fetch only unread emails
 python main.py fetch --unread-only --limit 100
 
+# Only fetch emails received after a given date (Gmail only)
+python main.py fetch --since 2026/04/01 --limit 500
+
 # Large batch with parallel processing
 python main.py fetch --limit 5000 --batch-size 100
+```
+
+### Automated Pipeline
+
+Run the full pipeline in a single command — ideal for n8n, cron, or any scheduled automation.
+Exits with code 1 if any step fails so the scheduler can detect and alert on errors.
+
+```bash
+# Full pipeline: fetch → classify → organize
+python main.py --profile atanas run
+
+# Only process emails received this week
+python main.py --profile atanas run --since 2026/04/28
+
+# Preview the organize step without applying changes to Gmail
+python main.py --profile atanas run --since 2026/04/28 --dry-run
+
+# Fetch more emails per run
+python main.py --profile atanas run --limit 200 --since 2026/04/01
+```
+
+The pipeline prints a summary line on completion:
+```
+=== Pipeline complete — fetched: 47, classified: 47, organized: 32 ===
 ```
 
 ### AI Features
