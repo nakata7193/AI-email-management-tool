@@ -31,6 +31,7 @@
 │  • cache → EmailCache                                              │
 │  • email_service → EmailService                                    │
 │  • ai_client → ClaudeClient                                        │
+│  • preparer → EmailContentPreparer                                 │
 │  • categorizer → EmailCategorizer                                  │
 │  • summarizer → EmailSummarizer                                    │
 │  • searcher → EmailSearcher                                        │
@@ -142,7 +143,51 @@ Clear layer boundaries:
 ### 5. Protocol-Based Abstraction
 - `AIClient` protocol allows different AI providers
 - `EmailProvider` protocol defines common interface
+- `ContentPreparer` protocol decouples AI modules from parsing implementation
 - Type hints enable IDE support without coupling
+
+## Email Content Preparation Pipeline
+
+All AI modules (categorizer, summarizer) receive cleaned, token-efficient text
+via an injected `ContentPreparer`. The pipeline is:
+
+```
+raw email body / html_body
+       │
+       ▼ (html fallback)
+  html_to_text()          ← only if body is empty and html_body exists
+       │
+       ▼ (noise stripping)
+  _strip_noise()          ← removes invisible spacers + tracking URLs
+       │
+       ▼ (truncation)
+  truncate_for_ai()       ← caller supplies the budget
+       │
+       ▼
+  AI-ready text
+```
+
+**Why noise stripping matters:** Promotional emails use invisible Unicode
+spacer characters (e.g. `\u200c`) to defeat spam filters, and embed long
+tracking URLs for analytics. These consume token budget before the actual
+message content is reached. For example, a 10,000-char eventim.de promotional
+email reduces to ~2,300 chars after stripping — and the message text that was
+previously cut off by the 400-char batch budget now appears in the first 400 chars.
+
+**Per-caller budgets:**
+
+| Use case | max_chars | Rationale |
+|---|---|---|
+| Batch categorization (per email) | 400 | Up to 100 emails per prompt; keep total prompt size manageable |
+| Single categorization | 5,000 | More context improves accuracy for one-off calls |
+| Summarization | 8,000 | Full content needed for useful summaries |
+| Response suggestion | 3,000 | Enough to understand what to reply to |
+| Thread preview (per email) | 500 | Brief snapshot per message in multi-email thread |
+
+**Interface:** `ContentPreparer` is a Protocol in `parsers/email_parser.py`.
+`EmailContentPreparer` is the concrete implementation. Both categorizer and
+summarizer depend on the protocol, not the implementation — so tests can
+inject a stub without touching parsing logic.
 
 ## Data Flow Example: Categorizing Emails
 
@@ -160,7 +205,8 @@ User runs: python main.py categorize-all --limit 100
    ├─ Creates EmailCache (lazy)
    ├─ Creates EmailService with cache
    ├─ Creates ClaudeClient with API key
-   └─ Creates EmailCategorizer with client
+   ├─ Creates EmailContentPreparer
+   └─ Creates EmailCategorizer with client + preparer
 
 3. Service (services/email_service.py)
    ├─ Validates limit (1-1000)
@@ -173,7 +219,7 @@ User runs: python main.py categorize-all --limit 100
          └─ cache.update_category(id, category, reasoning)
 
 4. AI Layer (ai/categorizer.py)
-   ├─ _prepare_body(email) - Pure function
+   ├─ preparer.prepare(body, html_body, max_chars=5000) - via ContentPreparer
    ├─ _build_categorization_prompt(email, body) - Pure function
    ├─ ai_client.complete(prompt) - I/O operation
    └─ _parse_categorization_response(text) - Pure function

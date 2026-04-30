@@ -1,28 +1,31 @@
 """Email summarization using Claude API."""
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 from ai.client import AIClient
 from providers.base import Email
-from parsers.email_parser import EmailParser
+from parsers.email_parser import ContentPreparer
 
 logger = logging.getLogger(__name__)
+
 
 class EmailSummarizer:
     """AI-powered email summarization.
 
     Separates business logic (prompt building, parsing) from I/O (API calls).
-    AI client is injected, making this class easy to test and provider-agnostic.
+    AI client and content preparer are injected, making this class easy to
+    test and provider-agnostic.
     """
 
-    def __init__(self, ai_client: AIClient):
-        """Initialize summarizer with AI client.
+    def __init__(self, ai_client: AIClient, preparer: ContentPreparer):
+        """Initialize summarizer with AI client and content preparer.
 
         Args:
             ai_client: AI client implementation (injected dependency)
+            preparer: Content preparer for cleaning email bodies (injected dependency)
         """
         self._client = ai_client
-        self._parser = EmailParser()
+        self._preparer = preparer
 
     def summarize(self, email: Email, include_action_items: bool = True) -> Dict[str, str]:
         """
@@ -36,15 +39,9 @@ class EmailSummarizer:
             Dictionary with 'summary' and optionally 'action_items' keys
         """
         try:
-            # Prepare email content
-            body = self._prepare_body(email)
-
-            # Build prompt
+            body = self._preparer.prepare(email.body, email.html_body, max_chars=8000)
             prompt = self._build_summarization_prompt(email, body, include_action_items)
-
-            # Call AI (injected dependency handles I/O)
             result_text = self._client.complete(prompt, max_tokens=1000)
-
             return self._parse_summary_response(result_text)
 
         except Exception as e:
@@ -54,40 +51,10 @@ class EmailSummarizer:
                 'action_items': ''
             }
 
-    def _prepare_body(self, email: Email) -> str:
-        """Prepare email body for AI processing.
-
-        Pure function - testable without API calls.
-
-        Args:
-            email: Email object
-
-        Returns:
-            Cleaned and truncated email body
-        """
-        body = email.body
-
-        if not body and email.html_body:
-            body = self._parser.html_to_text(email.html_body)
-
-        # Extract main content
-        main_content, _ = self._parser.extract_quoted_reply(body)
-
-        # Truncate for AI
-        return self._parser.truncate_for_ai(main_content, max_chars=8000)
-
     def _build_summarization_prompt(self, email: Email, body: str, include_action_items: bool) -> str:
         """Build the summarization prompt.
 
         Pure function - testable without API calls.
-
-        Args:
-            email: Email object
-            body: Prepared email body
-            include_action_items: Whether to include action items section
-
-        Returns:
-            Formatted prompt string
         """
         action_items_instruction = ""
         if include_action_items:
@@ -128,23 +95,15 @@ Respond now with your summary."""
         """Parse AI summary response.
 
         Pure function - testable without API calls.
-
-        Args:
-            response_text: Raw AI response
-
-        Returns:
-            Dictionary with 'summary' and 'action_items' keys
         """
         summary = ''
         action_items = ''
 
-        # Try to extract structured sections
         if 'Summary:' in response_text and 'Action Items:' in response_text:
             parts = response_text.split('Action Items:', 1)
             summary = parts[0].replace('Summary:', '').strip()
             action_items = parts[1].strip()
         else:
-            # Fallback: use entire response as summary
             summary = response_text.strip()
 
         return {
@@ -170,13 +129,9 @@ Respond now with your summary."""
                 result = self.summarize(emails[0])
                 return result['summary']
 
-            # Build thread context
             thread_content = []
             for i, email in enumerate(emails):
-                body = email.body or self._parser.html_to_text(email.html_body or '')
-                main_content, _ = self._parser.extract_quoted_reply(body)
-                preview = self._parser.get_text_preview(main_content, length=500)
-
+                preview = self._preparer.prepare(email.body, email.html_body, max_chars=500)
                 thread_content.append(
                     f"**Email {i+1}** (from {email.sender}, {email.received_date.strftime('%Y-%m-%d')}):\n{preview}"
                 )
@@ -214,8 +169,7 @@ Respond with the thread summary now."""
             Suggested response text
         """
         try:
-            body = email.body or self._parser.html_to_text(email.html_body or '')
-            main_content, _ = self._parser.extract_quoted_reply(body)
+            body = self._preparer.prepare(email.body, email.html_body, max_chars=3000)
 
             prompt = f"""Draft a professional response to this email.
 
@@ -223,7 +177,7 @@ Respond with the thread summary now."""
 - **Subject:** {email.subject}
 - **From:** {email.sender}
 - **Content:**
-{main_content[:3000]}
+{body}
 
 **Instructions:**
 - Keep the tone professional and friendly

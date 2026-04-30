@@ -2,8 +2,86 @@
 
 from bs4 import BeautifulSoup
 import html2text
-from typing import Optional
+from typing import Optional, Protocol
 import re
+
+
+class ContentPreparer(Protocol):
+    """Protocol for preparing email content for AI processing.
+
+    Implementors convert a raw email body into clean, truncated text
+    suitable for passing to an AI prompt.
+    """
+
+    def prepare(self, body: str, html_body: Optional[str], max_chars: int) -> str:
+        """Return AI-ready content within max_chars.
+
+        Args:
+            body: Plain-text email body (may be empty)
+            html_body: HTML email body fallback (may be None)
+            max_chars: Maximum character budget for the output
+
+        Returns:
+            Cleaned, truncated plain text
+        """
+        ...
+
+
+class EmailContentPreparer:
+    """Converts raw email bodies into clean, AI-ready text.
+
+    Pipeline: html fallback → noise stripping → truncation.
+    Noise stripping removes invisible spacer characters and tracking
+    URLs that bloat promotional emails before the budget is applied.
+    """
+
+    def __init__(self) -> None:
+        self._parser = EmailParser()
+
+    def prepare(self, body: str, html_body: Optional[str], max_chars: int) -> str:
+        """Return AI-ready content within max_chars.
+
+        Args:
+            body: Plain-text email body (may be empty)
+            html_body: HTML email body fallback (may be None)
+            max_chars: Maximum character budget for the output
+
+        Returns:
+            Cleaned, truncated plain text
+        """
+        text = body
+        if not text and html_body:
+            text = self._parser.html_to_text(html_body)
+        text = _strip_noise(text or '')
+        return self._parser.truncate_for_ai(text, max_chars=max_chars)
+
+
+def _strip_noise(text: str) -> str:
+    """Remove invisible spacers and tracking URLs from email body text.
+
+    Promotional emails use zero-width/soft characters to defeat spam
+    filters, and embed long tracking URLs that consume token budget
+    without contributing signal. This strips both before truncation.
+    """
+    # Invisible spacer/zero-width characters
+    text = re.sub(
+        r'[\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e'
+        r'\u2060-\u206f\ufeff\u034f\u061c\u180e\u2800]+',
+        '', text
+    )
+    # Markdown links [label](url) — keep the label
+    text = re.sub(r'\[([^\]]*)\]\(https?://\S+\)', r'\1', text)
+    # Angle-bracket links <https://...> — remove entirely
+    text = re.sub(r'<https?://\S+>', '', text)
+    # Parenthesised bare URLs ( https://... ) — remove entirely
+    text = re.sub(r'\(\s*https?://\S+\s*\)', '', text)
+    # Remaining bare URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # Collapse whitespace left behind
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    return text.strip()
+
 
 class EmailParser:
     """Utility class for parsing and cleaning email content."""

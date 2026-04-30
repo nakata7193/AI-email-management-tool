@@ -2,10 +2,10 @@
 
 import re
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from ai.client import AIClient
 from providers.base import Email
-from parsers.email_parser import EmailParser
+from parsers.email_parser import ContentPreparer
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +16,22 @@ class EmailCategorizer:
     """AI-powered email categorization.
 
     Separates business logic (prompt building, parsing) from I/O (API calls).
-    AI client is injected, making this class easy to test and provider-agnostic.
+    AI client and content preparer are injected, making this class easy to
+    test and provider-agnostic.
 
     Categories are loaded from email_config.json at runtime, falling back to
     built-in defaults if the file doesn't exist.
     """
 
-    def __init__(self, ai_client: AIClient):
-        """Initialize categorizer with AI client.
+    def __init__(self, ai_client: AIClient, preparer: ContentPreparer):
+        """Initialize categorizer with AI client and content preparer.
 
         Args:
             ai_client: AI client implementation (injected dependency)
+            preparer: Content preparer for cleaning email bodies (injected dependency)
         """
         self._client = ai_client
-        self._parser = EmailParser()
+        self._preparer = preparer
 
     def _get_categories(self) -> Dict[str, str]:
         """Load categories from config (with fallback to defaults)."""
@@ -51,7 +53,7 @@ class EmailCategorizer:
         categories = self._get_categories()
 
         try:
-            body = self._prepare_body(email)
+            body = self._preparer.prepare(email.body, email.html_body, max_chars=5000)
             prompt = self._build_single_prompt(email, body, categories)
             result_text = self._client.complete(prompt, max_tokens=200)
             return self._parse_single_response(result_text, categories)
@@ -100,14 +102,6 @@ class EmailCategorizer:
 
         return results
 
-    def _prepare_body(self, email: Email) -> str:
-        """Prepare email body for AI processing."""
-        body = email.body
-        if not body and email.html_body:
-            body = self._parser.html_to_text(email.html_body)
-        main_content, _ = self._parser.extract_quoted_reply(body or '')
-        return self._parser.truncate_for_ai(main_content, max_chars=5000)
-
     def _build_single_prompt(self, email: Email, body: str, categories: Dict[str, str]) -> str:
         """Build prompt for single-email categorization."""
         categories_desc = '\n'.join(
@@ -133,10 +127,7 @@ Reasoning: [your reasoning in 1-2 sentences]"""
         """Build compact batch prompt for multiple emails in one API call."""
         email_summaries = []
         for i, email in enumerate(emails, 1):
-            body = email.body or ''
-            if not body and email.html_body:
-                body = self._parser.html_to_text(email.html_body)
-            body = body[:400]
+            body = self._preparer.prepare(email.body, email.html_body, max_chars=400)
             email_summaries.append(
                 f"{i}. Subject: {email.subject}\n"
                 f"   From: {email.sender}\n"
@@ -191,7 +182,6 @@ Example:
         Falls back to last category if a line is missing or unrecognised.
         """
         fallback = next(iter(categories), 'other')
-        # Build index: position -> category
         position_map: Dict[int, str] = {}
 
         for line in response_text.strip().split('\n'):

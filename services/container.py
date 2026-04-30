@@ -17,6 +17,7 @@ from ai.client import ClaudeClient, AIClient
 from ai.categorizer import EmailCategorizer
 from ai.summarizer import EmailSummarizer
 from ai.search import EmailSearcher
+from parsers.email_parser import EmailContentPreparer, ContentPreparer
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class ServiceContainer:
         self._cache: Optional[EmailCache] = None
         self._email_service: Optional[EmailService] = None
         self._ai_client: Optional[AIClient] = None
+        self._preparer: Optional[ContentPreparer] = None
         self._categorizer: Optional[EmailCategorizer] = None
         self._summarizer: Optional[EmailSummarizer] = None
         self._searcher: Optional[EmailSearcher] = None
@@ -90,6 +92,18 @@ class ServiceContainer:
         return self._ai_client
 
     @property
+    def preparer(self) -> ContentPreparer:
+        """Get or create content preparer instance.
+
+        Returns:
+            ContentPreparer instance (singleton per container)
+        """
+        if not self._preparer:
+            self._preparer = EmailContentPreparer()
+            logger.debug("Created EmailContentPreparer")
+        return self._preparer
+
+    @property
     def categorizer(self) -> EmailCategorizer:
         """Get or create email categorizer instance.
 
@@ -97,7 +111,7 @@ class ServiceContainer:
             EmailCategorizer instance (singleton per container)
         """
         if not self._categorizer:
-            self._categorizer = EmailCategorizer(self.ai_client)
+            self._categorizer = EmailCategorizer(self.ai_client, self.preparer)
             logger.debug("Created EmailCategorizer")
         return self._categorizer
 
@@ -109,7 +123,7 @@ class ServiceContainer:
             EmailSummarizer instance (singleton per container)
         """
         if not self._summarizer:
-            self._summarizer = EmailSummarizer(self.ai_client)
+            self._summarizer = EmailSummarizer(self.ai_client, self.preparer)
             logger.debug("Created EmailSummarizer")
         return self._summarizer
 
